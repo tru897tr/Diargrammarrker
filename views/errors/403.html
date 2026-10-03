@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{{title}}</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/css/base.css">
+  <link rel="stylesheet" href="/css/pages.css">
+</head>
+<body>
+  <script id="boot-data" type="application/json">{{boot}}</script>
+
+  <div class="error-wrap">
+    <div>
+      <div class="code">403</div>
+      <h1>Không có quyền truy cập</h1>
+      <p>Bạn không có quyền xem trang này. Trang quản trị chỉ dành cho quản trị viên.</p>
+      <a class="btn btn-primary" href="/">Về trang chủ</a>
+    </div>
+  </div>
+
+  <script src="/js/core.js"></script>
+  <script>window.__DIAGRAM__?.Theme.init();</script>
+</body>
+</html>

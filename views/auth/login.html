@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="vi" data-auth="auto">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{{title}}</title>
+  <meta name="description" content="Đăng nhập Diagram để tiếp tục tạo sơ đồ.">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/css/base.css">
+  <link rel="stylesheet" href="/css/pages.css">
+</head>
+<body>
+  <script id="boot-data" type="application/json">{{boot}}</script>
+
+  <div class="auth-wrap">
+    <div class="auth-card">
+      <a class="brand" href="/">
+        <svg width="30" height="30" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+          <rect x="4" y="4" width="56" height="56" rx="14" fill="#4f46e5"/>
+          <rect x="14" y="18" width="16" height="12" rx="3" fill="#fff" fill-opacity="0.95"/>
+          <rect x="36" y="36" width="16" height="12" rx="3" fill="#fff" fill-opacity="0.7"/>
+          <path d="M30 24 C34 24, 32 38, 36 40" stroke="#c7d2fe" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+        </svg>
+        <span>Diagram</span>
+      </a>
+      <h1>Đăng nhập</h1>
+      <p class="sub">Chào mừng trở lại! Đăng nhập để tiếp tục vẽ.</p>
+
+      <div class="form-alert" id="formAlert" role="alert"></div>
+
+      <form id="loginForm" novalidate>
+        <div class="field">
+          <label for="email">Email</label>
+          <input class="input" type="email" id="email" name="email" autocomplete="email" required placeholder="ban@vidu.com">
+          <div class="field-error" id="err-email"></div>
+        </div>
+        <div class="field">
+          <label for="password">Mật khẩu</label>
+          <input class="input" type="password" id="password" name="password" autocomplete="current-password" required placeholder="••••••••">
+          <div class="field-error" id="err-password"></div>
+        </div>
+        <button class="btn btn-primary btn-block btn-lg" type="submit" id="submitBtn">Đăng nhập</button>
+      </form>
+
+      <p class="switch-link">Chưa có tài khoản? <a href="/register">Đăng ký miễn phí</a></p>
+    </div>
+  </div>
+
+  <script src="/js/core.js"></script>
+  <script src="/js/auth.js"></script>
+</body>
+</html>

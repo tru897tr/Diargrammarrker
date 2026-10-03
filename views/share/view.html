@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{{title}}</title>
+  <meta name="description" content="Xem sơ đồ được chia sẻ (chỉ đọc).">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/css/base.css">
+  <link rel="stylesheet" href="/css/pages.css">
+  <link rel="stylesheet" href="/css/editor.css">
+</head>
+<body>
+  <script id="boot-data" type="application/json">{{boot}}</script>
+
+  <div class="share-wrap">
+    <header class="share-header">
+      <a class="brand" href="/">
+        <svg width="24" height="24" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+          <rect x="4" y="4" width="56" height="56" rx="14" fill="#4f46e5"/>
+          <rect x="14" y="18" width="16" height="12" rx="3" fill="#fff" fill-opacity="0.95"/>
+          <rect x="36" y="36" width="16" height="12" rx="3" fill="#fff" fill-opacity="0.7"/>
+          <path d="M30 24 C34 24, 32 38, 36 40" stroke="#c7d2fe" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+        </svg>
+        <span>Diagram</span>
+      </a>
+      <div style="display:flex;align-items:center;gap:12px;min-width:0;">
+        <span class="share-title" id="shareTitle"></span>
+        <span class="badge badge-warn share-tag">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          CHỈ ĐỌC
+        </span>
+      </div>
+    </header>
+
+    <div class="canvas-host" id="canvasHost" style="flex:1;">
+      <svg class="diagram-svg" id="svgRoot" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div class="canvas-hud">
+        <button class="hud-btn" id="zoomOut" aria-label="Thu nho"></button>
+        <span class="hud-zoom" id="zoomLabel">100%</span>
+        <button class="hud-btn" id="zoomIn" aria-label="Phong to"></button>
+        <button class="hud-btn" id="fitBtn" aria-label="Xem toan bo"></button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/core.js"></script>
+  <script src="/js/editor-canvas.js"></script>
+  <script src="/js/share-view.js"></script>
+</body>
+</html>

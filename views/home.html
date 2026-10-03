@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{{title}}</title>
+  <meta name="description" content="Diagram — tao so do truc tuyen tren infinite canvas. Mien phi, nhanh, khong can cai dat.">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/css/base.css">
+  <link rel="stylesheet" href="/css/pages.css">
+</head>
+<body>
+  <script id="boot-data" type="application/json">{{boot}}</script>
+
+  <header class="site-header">
+    <div class="header-left" style="display:flex;align-items:center;gap:10px;">
+      <button class="hamburger" id="menuBtn" aria-label="Mo menu" hidden></button>
+      <a class="brand" href="/">
+        <svg width="26" height="26" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+          <rect x="4" y="4" width="56" height="56" rx="14" fill="#4f46e5"/>
+          <rect x="14" y="18" width="16" height="12" rx="3" fill="#fff" fill-opacity="0.95"/>
+          <rect x="36" y="36" width="16" height="12" rx="3" fill="#fff" fill-opacity="0.7"/>
+          <path d="M30 24 C34 24, 32 38, 36 40" stroke="#c7d2fe" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+          <path d="M36 40 l-4.5 -3 M36 40 l0.5 -5.5" stroke="#c7d2fe" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+        </svg>
+        <span>Diagram</span>
+      </a>
+    </div>
+    <div class="header-actions" id="headerActions"></div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="hero-inner">
+        <h1>Tạo sơ đồ của bạn,<br><span class="gradient-text">tự do như trên một tờ giấy vô hạn.</span></h1>
+        <p class="lead">
+          Vẽ hình khối, nối kết nối, thêm chữ chú thích — mọi thứ trên một canvas vô hạn,
+          mượt mà từ máy tính đến điện thoại. Lưu, nhân bản và chia sẻ sơ đồ chỉ trong một cú nhấp.
+        </p>
+        <div class="hero-cta">
+          <a class="btn btn-primary btn-lg" href="/create" id="ctaPrimary">Bắt đầu tạo sơ đồ</a>
+          <a class="btn btn-secondary btn-lg" href="/login" id="ctaSecondary">Đăng nhập</a>
+        </div>
+      </div>
+      <div class="hero-canvas">
+        <div class="frame">
+          <svg viewBox="0 0 860 460" role="img" aria-label="Vi du so do tren canvas Diagram">
+            <defs>
+              <pattern id="p-grid" width="24" height="24" patternUnits="userSpaceOnUse">
+                <path d="M24 0H0V24" fill="none" stroke="currentColor" stroke-opacity="0.08" stroke-width="1"/>
+              </pattern>
+            </defs>
+            <rect width="860" height="460" fill="url(#p-grid)" rx="8"/>
+            <g>
+              <rect x="70" y="60" width="170" height="64" rx="10" fill="#4f46e5"/>
+              <text x="155" y="98" text-anchor="middle" fill="#fff" font-size="15" font-weight="600" font-family="Segoe UI, sans-serif">Trình duyệt</text>
+              <rect x="70" y="240" width="170" height="64" rx="10" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.5"/>
+              <text x="155" y="278" text-anchor="middle" fill="#4f46e5" font-size="15" font-weight="600" font-family="Segoe UI, sans-serif">Canvas SVG</text>
+              <rect x="620" y="60" width="170" height="64" rx="32" fill="#f0fdf4" stroke="#059669" stroke-width="1.5"/>
+              <text x="705" y="98" text-anchor="middle" fill="#059669" font-size="15" font-weight="600" font-family="Segoe UI, sans-serif">API Server</text>
+              <rect x="620" y="240" width="170" height="80" rx="10" fill="#fffbeb" stroke="#d97706" stroke-width="1.5" stroke-dasharray="6 4"/>
+              <text x="705" y="285" text-anchor="middle" fill="#b45309" font-size="15" font-weight="600" font-family="Segoe UI, sans-serif">Memory Store</text>
+              <path d="M240 92 C380 92, 480 92, 620 92" stroke="#94a3b8" stroke-width="2" fill="none"/>
+              <path d="M612 87l10 5-10 5" fill="#94a3b8"/>
+              <path d="M155 124v116" stroke="#94a3b8" stroke-width="2" fill="none"/>
+              <path d="M150 232l5 10 5-10" fill="#94a3b8"/>
+              <path d="M705 124v116" stroke="#94a3b8" stroke-width="2" fill="none" stroke-dasharray="6 4"/>
+              <path d="M240 272 C380 272, 480 272, 620 272" stroke="#94a3b8" stroke-width="2" fill="none"/>
+              <path d="M612 267l10 5-10 5" fill="#94a3b8"/>
+              <g transform="translate(360 380) rotate(-4)">
+                <rect width="190" height="44" rx="6" fill="#fde68a" stroke="#d97706" stroke-width="1"/>
+                <text x="95" y="28" text-anchor="middle" fill="#78350f" font-size="14" font-family="Segoe UI, sans-serif">Sơ đồ luồng? Dễ ợt!</text>
+              </g>
+            </g>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <section class="features">
+      <div class="container">
+        <h2>Mọi thứ bạn cần để vẽ ý tưởng</h2>
+        <p class="sub">Từ flowchart đơn giản đến kiến trúc hệ thống phức tạp.</p>
+        <div class="features-grid">
+          <div class="feature-card">
+            <div class="icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg></div>
+            <h3>Infinite canvas</h3>
+            <p>Kéo, thu phóng không giới hạn. Grid chỉ là lớp nền — không chặn không gian làm việc.</p>
+          </div>
+          <div class="feature-card">
+            <div class="icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="1"/><circle cx="17" cy="17" r="4"/></svg></div>
+            <h3>Shapes &amp; connector</h3>
+            <p>Hình chữ nhật, ellipse, diamond, mũi tên — nối thẳng vào shape, di chuyển tự cập nhật.</p>
+          </div>
+          <div class="feature-card">
+            <div class="icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7V5h16v2"/><path d="M12 5v14"/><path d="M8 19h8"/></svg></div>
+            <h3>Text giàu tùy chọn</h3>
+            <p>Đổi cỡ chữ, in đậm, in nghiêng, căn lề, màu sắc. Ghim chú thích (sticky note) trực quan.</p>
+          </div>
+          <div class="feature-card">
+            <div class="icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l9 9-9 9-9-9z"/></svg></div>
+            <h3>Frames &amp; group</h3>
+            <p>Gom nhiều phần tử thành nhóm, đóng khung khu vực — tổ chức sơ đồ lớn gọn gàng.</p>
+          </div>
+          <div class="feature-card">
+            <div class="icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></div>
+            <h3>Lưu &amp; nhân bản</h3>
+            <p>Lưu JSON có cấu trúc, tạo bản sao chỉ với một cú nhấp — giữ nguyên mọi chi tiết.</p>
+          </div>
+          <div class="feature-card">
+            <div class="icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg></div>
+            <h3>Chia sẻ chỉ-đọc</h3>
+            <p>Link công khai với token an toàn — ai có link xem được, không ai sửa được, thu hồi bất cứ lúc nào.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="cta-band">
+      <div class="container">
+        <div class="card">
+          <h2>Sẵn sàng vẽ sơ đồ đầu tiên?</h2>
+          <p>Miễn phí, không cần cài đặt. Tài khoản đầu tiên của bạn ngay lập tức là quản trị viên hệ thống.</p>
+          <a class="btn btn-primary btn-lg" href="/register">Tạo tài khoản miễn phí</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <span>Diagram — sơ đồ trên giấy vô hạn</span>
+      <span>Dữ liệu bản demo lưu trong RAM và có thể mất khi restart.</span>
+    </div>
+  </footer>
+
+  <script src="/js/core.js"></script>
+  <script src="/js/home.js"></script>
+</body>
+</html>
