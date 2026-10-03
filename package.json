@@ -1,7 +1,7 @@
 {
   "name": "diagram",
   "version": "1.0.0",
-  "description": "Diagram — web app tao so do truc tuyen voi infinite canvas, chay tren Render",
+  "description": "Diagram — web app tạo sơ đồ trực tuyến với infinite canvas, chạy trên Render",
   "type": "module",
   "private": true,
   "engines": {
