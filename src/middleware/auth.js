@@ -26,7 +26,7 @@ export async function attachSession(req, _res, next) {
 /** Yeu cau dang nhap. 401 JSON neu khong. */
 export function requireAuth(req, res, next) {
   if (!req.user || !req.session) {
-    return fail(res, 'UNAUTHORIZED', 'Ban can dang nhap de thuc hien hanh dong nay.', 401);
+    return fail(res, 'UNAUTHORIZED', 'Bạn cần đăng nhập để thực hiện hành động này.', 401);
   }
   next();
 }
@@ -34,10 +34,10 @@ export function requireAuth(req, res, next) {
 /** Yeu cau admin. 403 JSON neu khong (backend enforce, khong the bypass frontend). */
 export function requireAdmin(req, res, next) {
   if (!req.user) {
-    return fail(res, 'UNAUTHORIZED', 'Ban can dang nhap de thuc hien hanh dong nay.', 401);
+    return fail(res, 'UNAUTHORIZED', 'Bạn cần đăng nhập để thực hiện hành động này.', 401);
   }
   if (req.user.role !== 'admin') {
-    return fail(res, 'FORBIDDEN', 'Ban khong co quyen thuc hien hanh dong nay.', 403);
+    return fail(res, 'FORBIDDEN', 'Bạn không có quyền thực hiện hành động này.', 403);
   }
   next();
 }

@@ -19,10 +19,10 @@ export function jsonBodyParser(req, res, next) {
 
   const contentType = (req.get('content-type') || '').split(';')[0].trim().toLowerCase();
   if (contentType === '' && (parseInt(req.get('content-length') || '0', 10) > 0)) {
-    return fail(res, 'UNSUPPORTED_MEDIA_TYPE', 'Thieu Content-Type.', 415);
+    return fail(res, 'UNSUPPORTED_MEDIA_TYPE', 'Thiếu Content-Type.', 415);
   }
   if (contentType && contentType !== 'application/json') {
-    return fail(res, 'UNSUPPORTED_MEDIA_TYPE', 'Chi ho tro Content-Type: application/json.', 415);
+    return fail(res, 'UNSUPPORTED_MEDIA_TYPE', 'Chỉ hỗ trợ Content-Type: application/json.', 415);
   }
   if (contentType === '') {
     // Body trong → req.body = {}
@@ -33,15 +33,22 @@ export function jsonBodyParser(req, res, next) {
   const limit = config.limits.jsonBodyBytes;
   const len = parseInt(req.get('content-length') || '0', 10);
   if (len > limit) {
-    return fail(res, 'BODY_TOO_LARGE', `Body qua lon (toi da ${Math.floor(limit / 1024)}KB).`, 413);
+    return fail(res, 'BODY_TOO_LARGE', `Body quá lớn (tối đa ${Math.floor(limit / 1024)}KB).`, 413);
   }
 
   let size = 0;
+  let rejected = false;
   const chunks = [];
   req.on('data', (chunk) => {
+    if (rejected) return;
     size += chunk.length;
     if (size > limit) {
-      req.destroy();
+      // Trả 413 cho client rồi mới ngắt kết nối (destroy ngay sẽ làm client chỉ thấy "lỗi mạng").
+      rejected = true;
+      chunks.length = 0;
+      res.setHeader('Connection', 'close');
+      fail(res, 'BODY_TOO_LARGE', 'Body quá lớn.', 413);
+      res.on('finish', () => req.destroy());
       return;
     }
     chunks.push(chunk);
@@ -50,6 +57,7 @@ export function jsonBodyParser(req, res, next) {
     /* client reset — khong lam gi */
   });
   req.on('end', () => {
+    if (rejected) return;
     if (chunks.length === 0) {
       req.body = {};
       return next();
@@ -59,15 +67,12 @@ export function jsonBodyParser(req, res, next) {
       if (raw.trim() === '') { req.body = {}; return next(); }
       const parsed = JSON.parse(raw);
       if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        return fail(res, 'INVALID_JSON', 'Body phai la JSON object.', 400);
+        return fail(res, 'INVALID_JSON', 'Body phải là JSON object.', 400);
       }
       req.body = parsed;
       next();
     } catch (e) {
-      if (size > limit) {
-        return fail(res, 'BODY_TOO_LARGE', 'Body qua lon.', 413);
-      }
-      return fail(res, 'INVALID_JSON', 'JSON khong hop le: ' + safeJsonMsg(e), 400);
+      return fail(res, 'INVALID_JSON', 'JSON không hợp lệ: ' + safeJsonMsg(e), 400);
     }
   });
 }
@@ -88,6 +93,6 @@ export function allowOnly(...methods) {
     const m = req.method.toLowerCase();
     if (allowedSet.has(m)) return next();
     res.setHeader('Allow', allowed.join(', '));
-    return fail(res, 'METHOD_NOT_ALLOWED', `Endpoint chi ho tro: ${allowed.join(', ')}.`, 405);
+    return fail(res, 'METHOD_NOT_ALLOWED', `Endpoint chỉ hỗ trợ: ${allowed.join(', ')}.`, 405);
   };
 }
