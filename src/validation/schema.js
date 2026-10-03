@@ -3,25 +3,52 @@ import { config } from '../server/config.js';
 
 const L = config.limits;
 
+/**
+ * Thông báo mặc định của zod bằng tiếng Việt (các schema bên dưới có message riêng
+ * thì message riêng được ưu tiên; map này chỉ lấp chỗ còn lại, vd "Required").
+ */
+z.setErrorMap((issue, ctx) => {
+  switch (issue.code) {
+    case z.ZodIssueCode.invalid_type:
+      return { message: issue.received === 'undefined' ? 'Trường này là bắt buộc.' : 'Kiểu dữ liệu không hợp lệ.' };
+    case z.ZodIssueCode.too_small:
+      if (issue.type === 'string') return { message: `Cần ít nhất ${issue.minimum} ký tự.` };
+      if (issue.type === 'array') return { message: `Cần ít nhất ${issue.minimum} phần tử.` };
+      return { message: `Giá trị phải từ ${issue.minimum} trở lên.` };
+    case z.ZodIssueCode.too_big:
+      if (issue.type === 'string') return { message: `Tối đa ${issue.maximum} ký tự.` };
+      if (issue.type === 'array') return { message: `Tối đa ${issue.maximum} phần tử.` };
+      return { message: `Giá trị phải từ ${issue.maximum} trở xuống.` };
+    case z.ZodIssueCode.invalid_string:
+      return { message: 'Định dạng không hợp lệ.' };
+    case z.ZodIssueCode.invalid_enum_value:
+      return { message: 'Giá trị không nằm trong danh sách cho phép.' };
+    case z.ZodIssueCode.unrecognized_keys:
+      return { message: 'Có trường không được hỗ trợ.' };
+    default:
+      return { message: ctx.defaultError };
+  }
+});
+
 /** Ky tu cho phep trong username: chu, so, dau gach duoi, gach ngang, cham. */
 export const usernameSchema = z
   .string()
   .trim()
-  .min(L.usernameMin, `Username phai co it nhat ${L.usernameMin} ky tu.`)
-  .max(L.usernameMax, `Username toi da ${L.usernameMax} ky tu.`)
-  .regex(/^[a-zA-Z0-9_.-]+$/, 'Username chi gom chu cai, so, . _ -');
+  .min(L.usernameMin, `Tên đăng nhập phải có ít nhất ${L.usernameMin} ký tự.`)
+  .max(L.usernameMax, `Tên đăng nhập tối đa ${L.usernameMax} ký tự.`)
+  .regex(/^[a-zA-Z0-9_.-]+$/, 'Tên đăng nhập chỉ gồm chữ cái, số, . _ -');
 
 export const emailSchema = z
   .string()
   .trim()
   .toLowerCase()
-  .email('Email khong hop le.')
-  .max(L.emailMax, 'Email qua dai.');
+  .email('Email không hợp lệ.')
+  .max(L.emailMax, 'Email quá dài.');
 
 export const passwordSchema = z
   .string()
-  .min(L.passwordMin, `Mat khau phai co it nhat ${L.passwordMin} ky tu.`)
-  .max(L.passwordMax, 'Mat khau qua dai.');
+  .min(L.passwordMin, `Mật khẩu phải có ít nhất ${L.passwordMin} ký tự.`)
+  .max(L.passwordMax, 'Mật khẩu quá dài.');
 
 export const registerSchema = z
   .object({
@@ -32,22 +59,22 @@ export const registerSchema = z
   })
   .refine((v) => v.password === v.confirmPassword, {
     path: ['confirmPassword'],
-    message: 'Xac nhan mat khau khong khop.',
+    message: 'Xác nhận mật khẩu không khớp.',
   });
 
 export const loginSchema = z.object({
   email: emailSchema,
-  password: z.string().min(1, 'Vui long nhap mat khau.'),
+  password: z.string().min(1, 'Vui lòng nhập mật khẩu.'),
 });
 
 export const changePasswordSchema = z
   .object({
-    currentPassword: z.string().min(1, 'Vui long nhap mat khau hien tai.'),
+    currentPassword: z.string().min(1, 'Vui lòng nhập mật khẩu hiện tại.'),
     newPassword: passwordSchema,
   })
   .refine((v) => v.currentPassword !== v.newPassword, {
     path: ['newPassword'],
-    message: 'Mat khau moi phai khac mat khau cu.',
+    message: 'Mật khẩu mới phải khác mật khẩu cũ.',
   });
 
 export const updateProfileSchema = z.object({
@@ -62,7 +89,7 @@ const num = z.number().finite();
 
 /** SVG color an toan: hex hoac ten CSS color co gioi han. */
 const colorRegex = /^(#[0-9a-fA-F]{3,8}|rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\)|[a-zA-Z]{3,32})$/;
-const color = z.string().trim().max(64).regex(colorRegex, 'Mau khong hop le.');
+const color = z.string().trim().max(64).regex(colorRegex, 'Màu không hợp lệ.');
 
 const styleSchema = z
   .object({
@@ -132,7 +159,7 @@ export const diagramDataSchema = z
   .strip();
 
 export const createDiagramSchema = z.object({
-  name: z.string().trim().min(1, 'Vui long nhap ten so do.').max(L.diagramNameLength, `Ten toi da ${L.diagramNameLength} ky tu.`),
+  name: z.string().trim().min(1, 'Vui lòng nhập tên sơ đồ.').max(L.diagramNameLength, `Tên tối đa ${L.diagramNameLength} ký tự.`),
   data: diagramDataSchema,
 });
 
@@ -146,7 +173,7 @@ export const updateDiagramSchema = z.object({
 export const shareTokenSchema = z
   .string()
   .trim()
-  .regex(/^[A-Za-z0-9_-]{20,100}$/, 'Share token khong hop le.');
+  .regex(/^[A-Za-z0-9_-]{20,100}$/, 'Liên kết chia sẻ không hợp lệ.');
 
 // ---------------------------------------------------------------- settings ---
 export const updateSettingsSchema = z.object({
