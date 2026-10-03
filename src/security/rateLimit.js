@@ -37,7 +37,7 @@ export function rateLimit({ name, max, windowMs, keyFn }) {
         success: false,
         error: {
           code: 'RATE_LIMITED',
-          message: 'Qua nhieu yeu cau. Vui long thu lai sau it phut.',
+          message: 'Quá nhiều yêu cầu. Vui lòng thử lại sau ít phút.',
         },
       });
     }

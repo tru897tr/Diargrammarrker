@@ -62,7 +62,7 @@ export function csrfProtection(req, res, next) {
   if (!token) {
     return res.status(403).json({
       success: false,
-      error: { code: 'CSRF_INVALID', message: 'Thieu CSRF token.' },
+      error: { code: 'CSRF_INVALID', message: 'Thiếu CSRF token.' },
     });
   }
 
@@ -71,7 +71,7 @@ export function csrfProtection(req, res, next) {
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
     return res.status(403).json({
       success: false,
-      error: { code: 'CSRF_INVALID', message: 'CSRF token khong hop le.' },
+      error: { code: 'CSRF_INVALID', message: 'CSRF token không hợp lệ.' },
     });
   }
   next();

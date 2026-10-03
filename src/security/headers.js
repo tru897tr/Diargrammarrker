@@ -1,17 +1,21 @@
 import { config } from '../server/config.js';
 
 /**
- * Helmet config + CSP that nhat cho app same-origin.
- * - default-src 'self': moi script/style/font/img deu phai cung origin.
- * - KHONG co script CDN — assets build local trong public/.
- * - connect-src 'self' chi cho fetch API cung origin.
- * - frame-ancestors 'none' chong clickjacking.
+ * Helmet config + CSP chặt cho app same-origin.
+ * - default-src 'self': mọi script/style/font/img đều phải cùng origin.
+ * - KHÔNG có script CDN — assets build local trong public/.
+ * - Không cho phép <script> inline (các view dùng file /js/*.js).
+ * - style-src-attr 'unsafe-inline': cho phép thuộc tính style="..." trong HTML
+ *   (các view dùng style="..." cho layout). Thẻ <style> và script inline vẫn bị chặn.
+ * - connect-src 'self' chỉ cho fetch API cùng origin.
+ * - frame-ancestors 'none' chống clickjacking.
  */
 
 const cspDirectives = {
   defaultSrc: ["'self'"],
   scriptSrc: ["'self'"],
   styleSrc: ["'self'"],
+  styleSrcAttr: ["'unsafe-inline'"],
   imgSrc: ["'self'", 'data:'],
   fontSrc: ["'self'"],
   connectSrc: ["'self'"],
@@ -19,10 +23,11 @@ const cspDirectives = {
   baseUri: ["'self'"],
   formAction: ["'self'"],
   frameAncestors: ["'none'"],
-  upgradeInsecureRequests: config.isProduction ? [] : null,
 };
+// Chỉ thêm directive này ở production (dev chạy http://localhost nên không được nâng cấp lên https).
+if (config.isProduction) cspDirectives.upgradeInsecureRequests = [];
 
-/** Helmet instance tao 1 lan (tranh trung lap header giua cac request). */
+/** Helmet instance tạo 1 lần (tránh trùng lặp header giữa các request). */
 let helmetMiddleware = null;
 
 export function securityHeaders() {
@@ -43,7 +48,8 @@ export function securityHeaders() {
           originAgentCluster: true,
         });
       }
-      helmetMiddleware(req, res, () => {
+      helmetMiddleware(req, res, (err) => {
+        if (err) return next(err);
         res.setHeader('X-Frame-Options', 'DENY');
         res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
         next();
