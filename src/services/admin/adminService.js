@@ -23,7 +23,7 @@ export async function getStats() {
     storage: {
       provider: config.storageProvider === 'firebase' ? 'firebase' : 'memory',
       persistent: false,
-      note: 'Memory storage: du lieu tam thoi, mat khi restart.',
+      note: 'Memory storage: dữ liệu tạm thời, mất khi khởi động lại.',
     },
     uptimeSeconds: Math.floor(process.uptime()),
     memory: {
@@ -48,15 +48,17 @@ export async function listUsers() {
 export async function updateUser(adminId, targetUserId, patch) {
   const target = await store.user.getUserById(targetUserId);
   if (!target) {
-    const err = new Error('Khong tim thay user.');
+    const err = new Error('Không tìm thấy người dùng.');
     err.code = 'NOT_FOUND';
     err.status = 404;
+    err.expose = true;
     throw err;
   }
 
   if (patch.status === 'locked' && target.id === adminId) {
-    const err = new Error('Khong the khoa tai khoan cua chinh minh.');
+    const err = new Error('Không thể khóa tài khoản của chính mình.');
     err.code = 'INVALID_REQUEST';
+    err.expose = true;
     throw err;
   }
 
@@ -64,8 +66,9 @@ export async function updateUser(adminId, targetUserId, patch) {
     const all = await store.user.listUsers();
     const adminCount = all.filter((u) => u.role === 'admin' && u.status === 'active').length;
     if (adminCount <= 1) {
-      const err = new Error('Phai ton tai it nhat mot admin kich hoat.');
+      const err = new Error('Phải tồn tại ít nhất một admin đang hoạt động.');
       err.code = 'INVALID_REQUEST';
+      err.expose = true;
       throw err;
     }
   }
@@ -83,9 +86,10 @@ export async function updateUser(adminId, targetUserId, patch) {
 export async function revokeUserSessions(adminId, targetUserId) {
   const target = await store.user.getUserById(targetUserId);
   if (!target) {
-    const err = new Error('Khong tim thay user.');
+    const err = new Error('Không tìm thấy người dùng.');
     err.code = 'NOT_FOUND';
     err.status = 404;
+    err.expose = true;
     throw err;
   }
   const count = await store.session.deleteSessionsForUser(targetUserId);
