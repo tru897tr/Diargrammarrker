@@ -9,10 +9,10 @@ const store = getStore();
 const startedAt = Date.now();
 
 /**
- * GET /api/v1/health — Render health check.
+ * GET /api/v1/health — Render health check (router được mount tại /api/v1/health).
  * Khong phai sensitive: chi status + uptime + provider.
  */
-router.get('/health', async (_req, res) => {
+router.get('/', async (_req, res) => {
   const [users, diagrams, sessions] = await Promise.all([
     store.user.countUsers(),
     store.diagram.countDiagrams(),

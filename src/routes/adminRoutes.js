@@ -37,11 +37,11 @@ router.patch('/users/:id', async (req, res, next) => {
   try {
     const parsed = adminUpdateUserSchema.safeParse(req.body);
     if (!parsed.success) {
-      return fail(res, 'VALIDATION_ERROR', 'Du lieu nhap khong hop le.', 400, zodFieldErrors(parsed.error));
+      return fail(res, 'VALIDATION_ERROR', 'Dữ liệu nhập không hợp lệ.', 400, zodFieldErrors(parsed.error));
     }
     const id = req.params.id;
     if (!/^[0-9a-fA-F-]{8,64}$/.test(id)) {
-      return fail(res, 'INVALID_REQUEST', 'ID khong hop le.', 400);
+      return fail(res, 'INVALID_REQUEST', 'ID không hợp lệ.', 400);
     }
     const user = await updateUser(req.user.id, id, parsed.data);
     return ok(res, { user });
@@ -58,7 +58,7 @@ router.post('/users/:id/revoke-sessions', async (req, res, next) => {
   try {
     const id = req.params.id;
     if (!/^[0-9a-fA-F-]{8,64}$/.test(id)) {
-      return fail(res, 'INVALID_REQUEST', 'ID khong hop le.', 400);
+      return fail(res, 'INVALID_REQUEST', 'ID không hợp lệ.', 400);
     }
     const result = await revokeUserSessions(req.user.id, id);
     return ok(res, result);

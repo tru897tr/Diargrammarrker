@@ -14,13 +14,13 @@ router.get('/:token', shareLimiter(), async (req, res, next) => {
   try {
     const parsed = shareTokenSchema.safeParse(req.params.token);
     if (!parsed.success) {
-      return fail(res, 'NOT_FOUND', 'Khong tim thay so do hoac lien ket da het hieu luc.', 404);
+      return fail(res, 'NOT_FOUND', 'Không tìm thấy sơ đồ hoặc liên kết đã hết hiệu lực.', 404);
     }
     const result = await getSharedDiagram(parsed.data);
     return ok(res, result);
   } catch (err) {
     if (err.code === 'SHARE_NOT_FOUND') {
-      return fail(res, 'NOT_FOUND', 'Khong tim thay so do hoac lien ket da het hieu luc.', 404);
+      return fail(res, 'NOT_FOUND', 'Không tìm thấy sơ đồ hoặc liên kết đã hết hiệu lực.', 404);
     }
     next(err);
   }

@@ -1,9 +1,6 @@
 import { Router } from 'express';
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
-import { config } from '../server/config.js';
 import { fail } from '../server/http.js';
-import { attachSession } from '../middleware/auth.js';
+import { renderView } from '../server/render.js';
 import { resolveSession } from '../services/auth/authService.js';
 import { getStore } from '../services/storage/index.js';
 import { getSharedDiagram } from '../services/diagrams/diagramService.js';
@@ -11,65 +8,42 @@ import { getSharedDiagram } from '../services/diagrams/diagramService.js';
 const router = Router();
 const store = getStore();
 
-const VIEWS_DIR = path.join(process.cwd(), 'views');
-const PUBLIC_DIR = path.join(process.cwd(), 'public');
-
 /**
- * SSR kieu don gian: template HTML + inject user state qua data-attribute.
- * An toan XSS: user data chi duoc escape vao JSON string, client doc qua
- * JSON.parse — khong innerHTML user input.
+ * SSR kiểu đơn giản: template HTML + dữ liệu khởi tạo (user, csrfToken, dev...)
+ * nhúng trong <script type="application/json" id="boot-data">.
+ * An toàn XSS: dữ liệu người dùng chỉ được escape vào JSON, client đọc qua JSON.parse
+ * — không dùng innerHTML với dữ liệu người dùng. Xem src/server/render.js.
  */
 
-function esc(s) {
-  return String(s ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
+const render404 = (res) => renderView(res, 'errors/404.html', { title: '404 — Diagram', status: 404 });
+const render403 = (res) => renderView(res, 'errors/403.html', { title: '403 — Diagram', status: 403 });
+
+/** Đọc session từ cookie (nếu có). Trả về { user, session } hoặc null. */
+async function currentSession(req) {
+  const raw = req.cookies?.diagram_session;
+  if (!raw) return null;
+  return resolveSession(raw);
 }
 
-async function render(res, viewFile, { title, user = null, extra = {} }) {
-  let html = await readFile(path.join(VIEWS_DIR, viewFile), 'utf8');
-  const boot = {
-    user,
-    appUrl: config.appUrl,
-    ...extra,
-  };
-  const json = JSON.stringify(boot).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e');
-  html = html
-    .replaceAll('{{title}}', esc(title))
-    .replaceAll('{{boot}}', json)
-    .replaceAll('{{theme}}', '');
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store');
-  res.status(res.statusCode || 200).send(html);
-}
-
-/** HOME — landing page (public, hien dang nhap neu co session). */
+/** HOME — landing page (public, hiện trạng thái đăng nhập nếu có session). */
 router.get('/', async (req, res, next) => {
   try {
-    const raw = req.cookies?.diagram_session;
-    let user = null;
-    if (raw) {
-      const r = await resolveSession(raw);
-      if (r) user = r.user;
-    }
-    await render(res, 'home.html', { title: 'Diagram — Tao so do tren canvas vo han', user });
+    const r = await currentSession(req);
+    await renderView(res, 'home.html', {
+      title: 'Diagram — Tạo sơ đồ trên canvas vô hạn',
+      user: r?.user ?? null,
+      session: r?.session ?? null,
+    });
   } catch (err) {
     next(err);
   }
 });
 
-/** Auth pages */
+/** Trang đăng nhập / đăng ký (đã đăng nhập thì chuyển về danh sách sơ đồ). */
 router.get('/login', async (req, res, next) => {
   try {
-    const raw = req.cookies?.diagram_session;
-    if (raw) {
-      const r = await resolveSession(raw);
-      if (r) return res.redirect('/diagrams');
-    }
-    await render(res, 'auth/login.html', { title: 'Dang nhap — Diagram' });
+    if (await currentSession(req)) return res.redirect('/diagrams');
+    await renderView(res, 'auth/login.html', { title: 'Đăng nhập — Diagram' });
   } catch (err) {
     next(err);
   }
@@ -77,33 +51,32 @@ router.get('/login', async (req, res, next) => {
 
 router.get('/register', async (req, res, next) => {
   try {
-    const raw = req.cookies?.diagram_session;
-    if (raw) {
-      const r = await resolveSession(raw);
-      if (r) return res.redirect('/diagrams');
-    }
-    await render(res, 'auth/register.html', { title: 'Dang ky — Diagram' });
+    if (await currentSession(req)) return res.redirect('/diagrams');
+    await renderView(res, 'auth/register.html', { title: 'Đăng ký — Diagram' });
   } catch (err) {
     next(err);
   }
 });
 
-/** Yeu cau dang nhap cho cac trang sau (redirect /login). */
+/** Yêu cầu đăng nhập cho các trang sau (redirect /login). */
 async function requirePage(req, res, next) {
-  const raw = req.cookies?.diagram_session;
-  if (!raw) return res.redirect('/login');
-  const r = await resolveSession(raw);
-  if (!r) return res.redirect('/login');
-  req.user = r.user;
-  req.session = r.session;
-  next();
+  try {
+    const r = await currentSession(req);
+    if (!r) return res.redirect('/login');
+    req.user = r.user;
+    req.session = r.session;
+    next();
+  } catch (err) {
+    next(err);
+  }
 }
 
 router.get('/create', requirePage, async (req, res, next) => {
   try {
-    await render(res, 'editor/editor.html', {
-      title: 'Tao so do — Diagram',
+    await renderView(res, 'editor/editor.html', {
+      title: 'Tạo sơ đồ — Diagram',
       user: req.user,
+      session: req.session,
       extra: { mode: 'create' },
     });
   } catch (err) {
@@ -114,15 +87,16 @@ router.get('/create', requirePage, async (req, res, next) => {
 router.get('/edit/:id', requirePage, async (req, res, next) => {
   try {
     const id = req.params.id;
-    if (!/^[0-9a-fA-F-]{8,64}$/.test(id)) return fail(res, 'NOT_FOUND', 'Khong tim thay so do.', 404);
+    if (!/^[0-9a-fA-F-]{8,64}$/.test(id)) return await render404(res);
     const diagram = await store.diagram.getDiagram(id);
     if (!diagram || diagram.ownerId !== req.user.id) {
-      // 404 de khong phoi lo ton tai — dong bo voi API
-      return render404(req, res);
+      // 404 để không phơi lộ sự tồn tại — đồng bộ với API
+      return await render404(res);
     }
-    await render(res, 'editor/editor.html', {
+    await renderView(res, 'editor/editor.html', {
       title: `${diagram.name} — Diagram`,
       user: req.user,
+      session: req.session,
       extra: { mode: 'edit', diagram },
     });
   } catch (err) {
@@ -132,7 +106,11 @@ router.get('/edit/:id', requirePage, async (req, res, next) => {
 
 router.get('/diagrams', requirePage, async (req, res, next) => {
   try {
-    await render(res, 'diagrams/list.html', { title: 'So do cua ban — Diagram', user: req.user });
+    await renderView(res, 'diagrams/list.html', {
+      title: 'Sơ đồ của bạn — Diagram',
+      user: req.user,
+      session: req.session,
+    });
   } catch (err) {
     next(err);
   }
@@ -140,68 +118,73 @@ router.get('/diagrams', requirePage, async (req, res, next) => {
 
 router.get('/settings', requirePage, async (req, res, next) => {
   try {
-    await render(res, 'settings/settings.html', { title: 'Cai dat — Diagram', user: req.user });
+    await renderView(res, 'settings/settings.html', {
+      title: 'Cài đặt — Diagram',
+      user: req.user,
+      session: req.session,
+    });
   } catch (err) {
     next(err);
   }
 });
 
-/** /admin — chi admin (server check role, redirect 403 page neu khong). */
+/** /admin — chỉ admin (server kiểm tra role, trả trang 403 nếu không phải admin). */
 router.get('/admin', requirePage, async (req, res, next) => {
   try {
-    if (req.user.role !== 'admin') {
-      return render403(req, res);
-    }
-    await render(res, 'admin/admin.html', { title: 'Quan ly — Diagram', user: req.user });
+    if (req.user.role !== 'admin') return await render403(res);
+    await renderView(res, 'admin/admin.html', {
+      title: 'Quản lý — Diagram',
+      user: req.user,
+      session: req.session,
+    });
   } catch (err) {
     next(err);
   }
 });
 
-/** /share/:token — public, read-only, khong yeu cau login. */
+/** /share/:token — public, chỉ đọc, không yêu cầu đăng nhập. */
 router.get('/share/:token', async (req, res, next) => {
+  const missing = () => renderView(res, 'share/missing.html', {
+    title: 'Liên kết không tồn tại — Diagram',
+    status: 404,
+  });
   try {
     const token = String(req.params.token || '');
-    if (!/^[A-Za-z0-9_-]{20,100}$/.test(token)) {
-      return render(res, 'share/missing.html', { title: 'Lien ket khong ton tai — Diagram' });
-    }
+    if (!/^[A-Za-z0-9_-]{20,100}$/.test(token)) return await missing();
+
+    let data;
     try {
-      const data = await getSharedDiagram(token);
-      await render(res, 'share/view.html', {
-        title: `${data.diagram.name} — Diagram (chi xem)`,
-        extra: { mode: 'share', shareData: data },
-      });
-    } catch {
-      await render(res, 'share/missing.html', { title: 'Lien ket khong ton tai — Diagram' });
+      data = await getSharedDiagram(token);
+    } catch (err) {
+      // Chỉ "không tìm thấy" mới hiện trang missing; lỗi khác (bug, storage...) đi tới error handler.
+      if (err.code === 'SHARE_NOT_FOUND') return await missing();
+      throw err;
     }
+    await renderView(res, 'share/view.html', {
+      title: `${data.diagram.name} — Diagram (chỉ xem)`,
+      extra: { mode: 'share', shareData: data },
+    });
   } catch (err) {
     next(err);
   }
 });
 
-async function render404(req, res) {
-  await render(res, 'errors/404.html', { title: '404 — Diagram' });
-}
-async function render403(req, res) {
-  await render(res, 'errors/403.html', { title: '403 — Diagram' });
-}
-
-// Method protection cho trang: GET only
+// Method protection cho trang: chỉ GET/HEAD
 router.use((req, res, next) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     res.setHeader('Allow', 'GET, HEAD');
-    return fail(res, 'METHOD_NOT_ALLOWED', 'Trang chi ho tro GET.', 405);
+    return fail(res, 'METHOD_NOT_ALLOWED', 'Trang chỉ hỗ trợ GET.', 405);
   }
   next();
 });
 
-// 404 page (cuoi cung)
-router.use(async (req, res) => {
-  const wantsJson = req.path.startsWith('/api/');
-  if (wantsJson) {
-    return fail(res, 'NOT_FOUND', 'Khong tim thay endpoint.', 404);
+// Trang 404 (cuối cùng)
+router.use(async (_req, res, next) => {
+  try {
+    await render404(res);
+  } catch (err) {
+    next(err);
   }
-  await render404(req, res);
 });
 
 export default router;
