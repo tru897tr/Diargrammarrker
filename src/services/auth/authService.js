@@ -1,5 +1,4 @@
 import { getStore } from '../storage/index.js';
-import { MemoryStore as _MS } from '../storage/MemoryStore.js';
 import { newSessionId, now } from '../../server/utils.js';
 import { config } from '../../server/config.js';
 import createLogger from '../../server/logger.js';
@@ -9,7 +8,11 @@ const log = createLogger('auth-service');
 
 export const store = getStore();
 
-/** Dang ky user moi. Tai khoan DAU TIEN = admin (store dam bao atomic). */
+async function getBcrypt() {
+  return (await import('bcryptjs')).default;
+}
+
+/** Đăng ký user mới. Tài khoản ĐẦU TIÊN = admin (store đảm bảo atomic). */
 export async function registerUser({ username, email, password }) {
   const existingEmail = await store.user.getUserByEmail(email);
   if (existingEmail) {
@@ -24,7 +27,7 @@ export async function registerUser({ username, email, password }) {
     throw err;
   }
 
-  const bcrypt = (await import('bcryptjs')).default;
+  const bcrypt = await getBcrypt();
   const passwordHash = await bcrypt.hash(password, config.bcryptRounds);
 
   const user = await store.user.createUser({ username, email, passwordHash });
@@ -32,18 +35,29 @@ export async function registerUser({ username, email, password }) {
   return user;
 }
 
-/** Kiem tra email + password, tra ve user neu dung. */
+/**
+ * Hash giả để so sánh khi email không tồn tại → thời gian phản hồi giống nhau
+ * (chống timing oracle dò email). Sinh một lần, đúng cost hiện tại.
+ */
+let dummyHashPromise = null;
+function getDummyHash() {
+  if (!dummyHashPromise) {
+    dummyHashPromise = getBcrypt().then((bcrypt) => bcrypt.hash('dummy-password-for-timing', config.bcryptRounds));
+  }
+  return dummyHashPromise;
+}
+
+/** Kiểm tra email + password, trả về user (public) nếu đúng. */
 export async function verifyLogin({ email, password }) {
+  const bcrypt = await getBcrypt();
   const user = await store.user.getUserByEmail(email);
   if (!user) {
-    // Hash gia de tranh timing oracle (luon mat ~1 hash time)
-    await import('bcryptjs').then((m) => m.default.compare(password, DUMMY_HASH));
+    await bcrypt.compare(password, await getDummyHash());
     return null;
   }
-  // Lay passwordHash goc tu store internal (public user khong co hash)
-  const internal = await getInternalUser(user.id);
+  // Public user không có hash → lấy bản nội bộ có passwordHash qua store.
+  const internal = await store.user.getUserWithHashById(user.id);
   if (!internal) return null;
-  const bcrypt = (await import('bcryptjs')).default;
   const okPass = await bcrypt.compare(password, internal.passwordHash);
   if (!okPass) return null;
   if (user.status === 'locked') {
@@ -54,7 +68,7 @@ export async function verifyLogin({ email, password }) {
   return user;
 }
 
-/** Tao session moi (login moi = session moi). Tra ve { session, user }. */
+/** Tạo session mới (login mới = session mới). */
 export async function createSessionForUser(userId) {
   const csrfToken = generateCsrfToken();
   const session = await store.session.createSession({
@@ -65,7 +79,7 @@ export async function createSessionForUser(userId) {
   return session;
 }
 
-/** Lay user tu session hop le (chua het han). */
+/** Lấy user từ session hợp lệ (chưa hết hạn). */
 export async function resolveSession(sessionId) {
   if (typeof sessionId !== 'string' || sessionId.length < 20) return null;
   const session = await store.session.getSession(sessionId);
@@ -75,38 +89,23 @@ export async function resolveSession(sessionId) {
   return { session, user };
 }
 
-/** Logout: invalidate session phia server. */
+/** Logout: invalidate session phía server. */
 export async function destroySession(sessionId) {
   if (typeof sessionId !== 'string') return false;
   return store.session.deleteSession(sessionId);
 }
 
-/** Doi password: require password hien tai, invalidate toan bo session cu. */
+/** Đổi password: yêu cầu password hiện tại, invalidate toàn bộ session cũ. */
 export async function changePassword(userId, currentPassword, newPassword) {
-  const internal = await getInternalUser(userId);
+  const internal = await store.user.getUserWithHashById(userId);
   if (!internal) return { ok: false, reason: 'NOT_FOUND' };
-  const bcrypt = (await import('bcryptjs')).default;
-  const ok = await bcrypt.compare(currentPassword, internal.passwordHash);
-  if (!ok) return { ok: false, reason: 'INVALID_PASSWORD' };
+  const bcrypt = await getBcrypt();
+  const matches = await bcrypt.compare(currentPassword, internal.passwordHash);
+  if (!matches) return { ok: false, reason: 'INVALID_PASSWORD' };
   const passwordHash = await bcrypt.hash(newPassword, config.bcryptRounds);
   await store.user.updateUser(userId, { passwordHash });
   await store.session.deleteSessionsForUser(userId);
   return { ok: true };
 }
-
-// MemoryStore tra public user (khong hash) — can hash de verify.
-// Voi store khac (Firebase) can ham getInternalUser rieng; o day dung
-// back-door cua MemoryStore qua private map. de dong bo, dinh nghia o day.
-async function getInternalUser(userId) {
-  if (store instanceof _MS) {
-    const u = store.users.get(userId);
-    return u ? { ...u } : null;
-  }
-  // Firebase skeleton: TODO getUserWithHash
-  return null;
-}
-
-// Hash gia cho timing-safe login that bai (dung bcrypt cost thap vi chi la delay)
-const DUMMY_HASH = '$2b$12$C6UzMDM.H6dfI/f/IKcEe.yBpGhX5Z6/jqxG2JZxGxGxGxGxGxGxG';
 
 export { newSessionId, now };
