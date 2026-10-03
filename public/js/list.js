@@ -71,7 +71,7 @@
     menu.className = "item-menu";
     const menuBtn2 = document.createElement("button");
     menuBtn2.className = "item-menu-btn";
-    menuBtn2.setAttribute("aria-label", `Thao tac voi so do ${d.name}`);
+    menuBtn2.setAttribute("aria-label", `Thao tác với sơ đồ ${d.name}`);
     menuBtn2.setAttribute("aria-haspopup", "menu");
     menuBtn2.innerHTML = ICONS.dots;
     const dropdown = document.createElement("div");

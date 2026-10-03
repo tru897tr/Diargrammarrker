@@ -1,5 +1,29 @@
-/* Diagram — client core: api client, boot, theme, ui (modal/toast/menu) */
+/* Diagram — client core: boot, api client, theme, ui (toast/modal/menu), báo lỗi development */
 "use strict";
+
+/* ============ Boot data (server nhúng vào trang) ============ */
+
+function parseBoot() {
+  const el = document.getElementById("boot-data");
+  if (!el) return { user: null };
+  try {
+    return JSON.parse(el.textContent);
+  } catch (e) {
+    console.error("[boot] Không đọc được #boot-data:", e);
+    return { user: null };
+  }
+}
+
+const BOOT = parseBoot();
+/** true khi server chạy NODE_ENV=development: lỗi hiện toast + popup chi tiết. */
+const IS_DEV = BOOT.dev === true;
+
+/* ============ Helpers ============ */
+
+/** Bỏ origin khỏi đường dẫn file trong stack cho dễ đọc: http://localhost:3000/js/a.js → /js/a.js */
+function shortenUrls(text) {
+  return String(text ?? "").split(window.location.origin).join("");
+}
 
 /* ============ API client (CSRF-aware) ============ */
 
@@ -7,34 +31,59 @@ const Api = {
   csrfToken: null,
 
   init() {
-    const m = document.documentElement.dataset.csrf;
-    if (m) this.csrfToken = m;
+    if (BOOT.csrfToken) this.csrfToken = BOOT.csrfToken;
+  },
+
+  /** Token CSRF: ưu tiên giá trị server nhúng vào trang, dự phòng đọc cookie diagram_csrf ("<token>.<hmac>"). */
+  getCsrfToken() {
+    if (this.csrfToken) return this.csrfToken;
+    const m = document.cookie.match(/(?:^|;\s*)diagram_csrf=([^;]+)/);
+    if (m) {
+      const v = decodeURIComponent(m[1]);
+      const i = v.lastIndexOf(".");
+      if (i > 0) return v.slice(0, i);
+    }
+    return null;
   },
 
   async call(method, path, body) {
     const opts = {
       method,
       credentials: "same-origin",
-      headers: {},
+      headers: { Accept: "application/json" },
     };
     if (body !== undefined) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
     }
-    if (this.csrfToken && method !== "GET" && method !== "HEAD") {
-      opts.headers["X-CSRF-Token"] = this.csrfToken;
+    if (method !== "GET" && method !== "HEAD") {
+      const token = this.getCsrfToken();
+      if (token) opts.headers["X-CSRF-Token"] = token;
     }
+
     let res;
     try {
       res = await fetch(path, opts);
-    } catch {
-      return { success: false, error: { code: "NETWORK", message: "Khong ket noi duoc server." } };
+    } catch (cause) {
+      const result = {
+        success: false,
+        error: { code: "NETWORK", message: "Không kết nối được máy chủ. Hãy kiểm tra mạng rồi thử lại." },
+      };
+      DevErrors.reportApi(result, { method, path, status: 0, cause });
+      return result;
     }
+
     let data = null;
-    try { data = await res.json(); } catch { /* empty */ }
-    if (!data) {
-      return { success: false, error: { code: "BAD_RESPONSE", message: "Phan hoi khong hop le." } };
+    try { data = await res.json(); } catch { /* không phải JSON */ }
+    if (!data || typeof data !== "object") {
+      const result = {
+        success: false,
+        error: { code: "BAD_RESPONSE", message: `Phản hồi không hợp lệ từ máy chủ (HTTP ${res.status}).` },
+      };
+      DevErrors.reportApi(result, { method, path, status: res.status });
+      return result;
     }
+    if (!data.success) DevErrors.reportApi(data, { method, path, status: res.status });
     return data;
   },
 
@@ -64,8 +113,8 @@ const Theme = {
     try { localStorage.setItem("diagram-theme", mode); } catch { /* ignore */ }
   },
   toggle() {
-    const cur = this.load();
-    const next = cur === "dark" ? "light" : "dark";
+    // Dựa vào giao diện đang hiển thị (kể cả khi đang ở chế độ "system")
+    const next = this.isDark() ? "light" : "dark";
     this.apply(next);
     return next;
   },
@@ -90,19 +139,48 @@ const Toast = {
     return this.wrap;
   },
 
-  show(message, type = "info", ms = 3200) {
+  /**
+   * show(message, type, ms, { onClick, hint })
+   * - ms = 0: không tự đóng.
+   * - onClick: toast trở thành nút bấm (vd mở popup chi tiết lỗi).
+   */
+  show(message, type = "info", ms = 3200, opts = {}) {
     const wrap = this.ensure();
     const el = document.createElement("div");
     el.className = `toast ${type}`;
-    const span = document.createElement("span");
-    span.textContent = message; // textContent = XSS-safe
-    el.appendChild(span);
+
+    const content = document.createElement("div");
+    content.className = "toast-body";
+    const msg = document.createElement("span");
+    msg.className = "toast-msg";
+    msg.textContent = message; // textContent = XSS-safe
+    content.appendChild(msg);
+    if (opts.hint) {
+      const hint = document.createElement("span");
+      hint.className = "toast-hint";
+      hint.textContent = opts.hint;
+      content.appendChild(hint);
+    }
+    el.appendChild(content);
+
     const close = document.createElement("button");
     close.className = "toast-close";
-    close.setAttribute("aria-label", "Dong thong bao");
+    close.type = "button";
+    close.setAttribute("aria-label", "Đóng thông báo");
     close.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
-    close.addEventListener("click", () => this.dismiss(el));
+    close.addEventListener("click", (e) => { e.stopPropagation(); this.dismiss(el); });
     el.appendChild(close);
+
+    if (typeof opts.onClick === "function") {
+      el.classList.add("clickable");
+      el.tabIndex = 0;
+      el.setAttribute("role", "button");
+      el.addEventListener("click", () => opts.onClick(el));
+      el.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); opts.onClick(el); }
+      });
+    }
+
     wrap.appendChild(el);
     if (ms > 0) setTimeout(() => this.dismiss(el), ms);
     return el;
@@ -112,6 +190,37 @@ const Toast = {
   error(msg) { return this.show(msg, "error", 4500); },
   warn(msg) { return this.show(msg, "warn", 4000); },
 
+  /**
+   * Toast lỗi cho development: hiện tóm tắt, bấm vào để mở popup chi tiết (stack, file:dòng...).
+   * Lỗi trùng nhau liên tiếp được gộp lại và đếm số lần.
+   */
+  debug(info) {
+    const key = `${info.name}|${info.message}|${info.location}`;
+    const existing = [...this.ensure().querySelectorAll(".toast.dev")].find((t) => t.dataset.key === key);
+    if (existing) {
+      const n = Number(existing.dataset.count || 1) + 1;
+      existing.dataset.count = String(n);
+      existing.querySelector(".toast-msg").textContent = `[DEV ×${n}] ${this._summary(info)}`;
+      return existing;
+    }
+    // Giữ tối đa 4 toast dev cùng lúc
+    const devToasts = this.wrap.querySelectorAll(".toast.dev");
+    if (devToasts.length >= 4) this.dismiss(devToasts[0]);
+
+    const el = this.show(`[DEV] ${this._summary(info)}`, "error dev", 20000, {
+      hint: "Bấm để xem chi tiết lỗi",
+      onClick: () => UI.errorDetail(info),
+    });
+    el.dataset.key = key;
+    return el;
+  },
+
+  _summary(info) {
+    const where = info.location ? ` — ${info.location}` : "";
+    const text = `${info.name && info.name !== "Error" ? info.name + ": " : ""}${info.message}${where}`;
+    return text.length > 180 ? text.slice(0, 177) + "…" : text;
+  },
+
   dismiss(el) {
     if (!el || el.classList.contains("hide")) return;
     el.classList.add("hide");
@@ -119,20 +228,27 @@ const Toast = {
   },
 };
 
-/* ============ Modal / Confirm dialog ============ */
+/* ============ Modal / Confirm dialog / Chi tiết lỗi ============ */
 
 const UI = {
   activeModal: null,
 
-  /** modal({ title, body, actions: [{label, class, value, autofocus}] }) → Promise<value|null> */
-  modal({ title, body, actions = [{ label: "Đóng", class: "btn-secondary", value: "close" }] }) {
+  /**
+   * modal({ title, body, actions: [{label, class, value, autofocus}], wide })
+   * → Promise<value|null>  (null khi đóng bằng Esc / bấm nền)
+   */
+  modal({ title, body, wide = false, actions = [{ label: "Đóng", class: "btn-secondary", value: "close" }] }) {
     return new Promise((resolve) => {
       if (this.activeModal) this.closeModal(this.activeModal, null);
 
+      const previouslyFocused = document.activeElement;
       const backdrop = document.createElement("div");
-      backdrop.className = "modal-backdrop open";
+      backdrop.className = "modal-backdrop";
+      backdrop._resolve = resolve;
+      backdrop._returnFocus = previouslyFocused;
+
       const modal = document.createElement("div");
-      modal.className = "modal";
+      modal.className = wide ? "modal modal-wide" : "modal";
       modal.setAttribute("role", "dialog");
       modal.setAttribute("aria-modal", "true");
       modal.setAttribute("aria-label", title);
@@ -156,13 +272,11 @@ const UI = {
       row.className = "modal-actions";
       for (const a of actions) {
         const btn = document.createElement("button");
+        btn.type = "button";
         btn.className = `btn ${a.class || "btn-secondary"}`;
         btn.textContent = a.label;
         if (a.value === "confirm-primary" || a.autofocus) btn.autofocus = true;
-        btn.addEventListener("click", () => {
-          this.closeModal(backdrop, a.value);
-          resolve(a.value);
-        });
+        btn.addEventListener("click", () => this.closeModal(backdrop, a.value));
         row.appendChild(btn);
       }
       modal.appendChild(row);
@@ -170,33 +284,47 @@ const UI = {
       document.body.appendChild(backdrop);
       this.activeModal = backdrop;
 
-      // Focus management
-      const focusables = modal.querySelectorAll("button, input, select, textarea, [tabindex]");
-      const first = focusables[0];
-      if (first) first.focus();
+      // Hiện popup (thêm class "open" sau khi gắn vào DOM để chạy transition)
+      requestAnimationFrame(() => backdrop.classList.add("open"));
+
+      // Focus: nút autofocus, nếu không có thì phần tử focus được đầu tiên
+      const focusables = [...modal.querySelectorAll("button, input, select, textarea, [tabindex]")];
+      (focusables.find((x) => x.autofocus) || focusables[0])?.focus();
 
       backdrop.addEventListener("mousedown", (e) => {
-        if (e.target === backdrop) { this.closeModal(backdrop, null); resolve(null); }
+        if (e.target === backdrop) this.closeModal(backdrop, null);
       });
+
+      // Esc đóng popup dù focus đang ở đâu
+      backdrop._onKey = (e) => {
+        if (e.key === "Escape") { e.stopPropagation(); this.closeModal(backdrop, null); }
+      };
+      document.addEventListener("keydown", backdrop._onKey, true);
+
+      // Giữ focus trong popup
       modal.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") { this.closeModal(backdrop, null); resolve(null); }
-        // Focus trap
-        if (e.key === "Tab") {
-          e.preventDefault();
-          const list = [...modal.querySelectorAll("button, input, select, textarea")].filter((x) => !x.disabled);
-          const idx = list.indexOf(document.activeElement);
-          const next = e.shiftKey ? (idx <= 0 ? list.length - 1 : idx - 1) : (idx === list.length - 1 ? 0 : idx + 1);
-          if (list[next]) list[next].focus();
-        }
+        if (e.key !== "Tab") return;
+        const list = [...modal.querySelectorAll("button, input, select, textarea")].filter((x) => !x.disabled);
+        if (list.length === 0) return;
+        e.preventDefault();
+        const idx = list.indexOf(document.activeElement);
+        const next = e.shiftKey ? (idx <= 0 ? list.length - 1 : idx - 1) : (idx === list.length - 1 ? 0 : idx + 1);
+        list[next].focus();
       });
     });
   },
 
-  closeModal(backdrop, _value) {
-    if (!backdrop || !backdrop.classList.contains("open")) return;
+  /** Đóng popup (mặc định: popup đang mở) và trả `value` cho Promise của modal(). */
+  closeModal(backdrop, value = null) {
+    backdrop = backdrop || this.activeModal;
+    if (!backdrop || backdrop._closed) return;
+    backdrop._closed = true;
     backdrop.classList.remove("open");
+    document.removeEventListener("keydown", backdrop._onKey, true);
     setTimeout(() => backdrop.remove(), 200);
     if (this.activeModal === backdrop) this.activeModal = null;
+    try { backdrop._returnFocus?.focus?.(); } catch { /* phần tử đã bị gỡ */ }
+    backdrop._resolve?.(value);
   },
 
   /** confirm({ title, message, okLabel, danger }) → Promise<bool> */
@@ -209,6 +337,177 @@ const UI = {
         { label: okLabel, class: danger ? "btn-danger" : "btn-primary", value: true },
       ],
     }).then((v) => v === true);
+  },
+
+  /** Sao chép văn bản vào clipboard. Trả về true nếu thành công. */
+  async copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      let done = false;
+      try { done = document.execCommand("copy"); } catch { /* bỏ qua */ }
+      ta.remove();
+      return done;
+    }
+  },
+
+  /** Popup chi tiết lỗi (development): thông báo, vị trí file:dòng, request, stack trace. */
+  errorDetail(info) {
+    const body = document.createElement("div");
+    body.className = "err-detail";
+
+    const rows = [
+      ["Thông báo", info.message],
+      ["Loại lỗi", [info.name, info.code].filter(Boolean).join(" · ")],
+      ["Vị trí", info.location],
+      ["Nguồn", info.source === "server" ? "Máy chủ (Node.js)" : info.source === "client" ? "Trình duyệt (JavaScript)" : info.source],
+      ["Yêu cầu", info.request ? `${info.request.method} ${info.request.url}` : null],
+      ["HTTP", info.status ? String(info.status) : null],
+      ["Request ID", info.request?.requestId],
+      ["Thời điểm", info.time],
+      ["Node", info.node],
+    ].filter(([, v]) => v);
+
+    const dl = document.createElement("dl");
+    dl.className = "err-meta";
+    for (const [k, v] of rows) {
+      const dt = document.createElement("dt");
+      dt.textContent = k;
+      const dd = document.createElement("dd");
+      dd.textContent = v;
+      dl.append(dt, dd);
+    }
+    body.appendChild(dl);
+
+    const addBlock = (label, text) => {
+      if (!text) return;
+      const lab = document.createElement("div");
+      lab.className = "err-label";
+      lab.textContent = label;
+      const pre = document.createElement("pre");
+      pre.className = "err-stack";
+      pre.textContent = text; // textContent = XSS-safe
+      body.append(lab, pre);
+    };
+    addBlock("Stack trace", info.stack);
+    addBlock("Nguyên nhân (cause)", info.cause);
+
+    const plain = [
+      ...rows.map(([k, v]) => `${k}: ${v}`),
+      info.stack ? `\nStack trace:\n${info.stack}` : "",
+      info.cause ? `\nCause:\n${info.cause}` : "",
+    ].join("\n");
+
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "btn btn-secondary btn-sm";
+    copyBtn.textContent = "Sao chép chi tiết";
+    copyBtn.addEventListener("click", async () => {
+      const ok = await this.copyText(plain);
+      copyBtn.textContent = ok ? "Đã sao chép!" : "Không sao chép được";
+      setTimeout(() => { copyBtn.textContent = "Sao chép chi tiết"; }, 1800);
+    });
+    body.appendChild(copyBtn);
+
+    return this.modal({
+      title: "Chi tiết lỗi (chế độ development)",
+      body,
+      wide: true,
+      actions: [{ label: "Đóng", class: "btn-primary", value: "close", autofocus: true }],
+    });
+  },
+};
+
+/* ============ Báo lỗi (DevErrors) ============ */
+
+const DevErrors = {
+  lastGenericAt: 0,
+
+  /** Lỗi từ API. Development: toast + popup chi tiết cho lỗi server (500...) và lỗi mạng. */
+  reportApi(result, ctx) {
+    const e = result?.error || {};
+    const transport = e.code === "NETWORK" || e.code === "BAD_RESPONSE";
+    if (!IS_DEV) return;                 // production: trang tự hiện toast thân thiện từ e.message
+    if (!e.debug && !transport) return;  // lỗi nghiệp vụ (validation, 401...) không phải bug → không báo
+
+    const d = e.debug || {};
+    Toast.debug({
+      source: "server",
+      name: d.name || (transport ? "NetworkError" : "Error"),
+      message: d.message || e.message,
+      code: d.code || e.code,
+      status: d.status || ctx.status || undefined,
+      location: d.location || null,
+      stack: d.stack || (ctx.cause && ctx.cause.stack ? shortenUrls(ctx.cause.stack) : null),
+      cause: d.cause,
+      request: d.request || { method: ctx.method, url: ctx.path },
+      time: d.time || new Date().toISOString(),
+      node: d.node,
+    });
+  },
+
+  /** Lỗi JavaScript chạy trên trình duyệt (error / unhandledrejection). */
+  reportJs({ name, message, location, stack }) {
+    console.error(`[${name || "Error"}] ${message}`, location || "", stack || "");
+    if (IS_DEV) {
+      Toast.debug({
+        source: "client",
+        name: name || "Error",
+        message: message || "Lỗi JavaScript không xác định",
+        location: location || null,
+        stack: stack ? shortenUrls(stack) : null,
+        request: { method: "GET", url: shortenUrls(window.location.href) },
+        time: new Date().toISOString(),
+      });
+      return;
+    }
+    // Production: một toast chung, tối đa 1 lần / 8 giây (tránh spam)
+    const t = Date.now();
+    if (t - this.lastGenericAt > 8000) {
+      this.lastGenericAt = t;
+      Toast.error("Đã xảy ra lỗi không mong muốn. Nếu chức năng không hoạt động, hãy tải lại trang.");
+    }
+  },
+
+  install() {
+    // capture = true để bắt cả lỗi tải tài nguyên (<script>, <link>, <img>) — những lỗi này không nổi bọt.
+    window.addEventListener("error", (ev) => {
+      if (ev.target && ev.target !== window) {
+        const url = ev.target.src || ev.target.href;
+        if (IS_DEV && url) {
+          this.reportJs({ name: "ResourceError", message: `Không tải được tài nguyên: ${shortenUrls(url)}`, location: shortenUrls(url) });
+        }
+        return;
+      }
+      const msg = String(ev.message || "");
+      if (msg.includes("ResizeObserver loop")) return;        // vô hại, trình duyệt tự sinh
+      if (msg === "Script error." && !ev.filename) return;    // lỗi cross-origin không có thông tin
+      this.reportJs({
+        name: ev.error?.name || "Error",
+        message: ev.error?.message || msg,
+        location: ev.filename ? `${shortenUrls(ev.filename)}:${ev.lineno}:${ev.colno}` : null,
+        stack: ev.error?.stack,
+      });
+    }, true);
+
+    window.addEventListener("unhandledrejection", (ev) => {
+      const r = ev.reason;
+      const stack = r instanceof Error ? r.stack : null;
+      const loc = stack ? (stack.split("\n").find((l) => /:\d+:\d+/.test(l)) || "").trim() : "";
+      this.reportJs({
+        name: r instanceof Error ? r.name : "UnhandledRejection",
+        message: r instanceof Error ? r.message : String(r),
+        location: loc ? shortenUrls(loc.replace(/^at\s+/, "")) : null,
+        stack,
+      });
+    });
   },
 };
 
@@ -223,7 +522,7 @@ const SideMenu = {
 
     const menu = document.createElement("nav");
     menu.className = "side-menu";
-    menu.setAttribute("aria-label", "Menu chinh");
+    menu.setAttribute("aria-label", "Menu chính");
 
     const head = document.createElement("div");
     head.className = "side-menu-head";
@@ -235,7 +534,7 @@ const SideMenu = {
     head.appendChild(brand);
     const closeBtn = document.createElement("button");
     closeBtn.className = "hamburger";
-    closeBtn.setAttribute("aria-label", "Dong menu");
+    closeBtn.setAttribute("aria-label", "Đóng menu");
     closeBtn.innerHTML = ICONS.close;
     closeBtn.addEventListener("click", () => this.close());
     head.appendChild(closeBtn);
@@ -254,7 +553,7 @@ const SideMenu = {
       nm.textContent = user.username; // XSS-safe
       const rl = document.createElement("div");
       rl.className = "role";
-      rl.textContent = user.role === "admin" ? "admin" : "thanh vien";
+      rl.textContent = user.role === "admin" ? "admin" : "thành viên";
       meta.appendChild(nm);
       meta.appendChild(rl);
       u.appendChild(av);
@@ -351,36 +650,17 @@ const ICONS = {
   reset: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5"/></svg>',
 };
 
-/* ============ Boot ============ */
+/* ============ Khởi tạo ============ */
 
-function parseBoot() {
-  const el = document.getElementById("boot-data");
-  if (!el) return { user: null };
-  try {
-    return JSON.parse(el.textContent);
-  } catch {
-    return { user: null };
-  }
-}
+// QUAN TRỌNG: gán window.__DIAGRAM__ ĐỒNG BỘ ngay khi core.js chạy,
+// vì các file auth.js / list.js / editor.js ... đọc nó ngay ở dòng đầu tiên.
+Api.init();
+Theme.init();
+DevErrors.install();
 
-async function fetchMe() {
-  const res = await Api.get("/api/v1/auth/me");
-  if (res.success) {
-    if (res.data.csrfToken) Api.csrfToken = res.data.csrfToken;
-    return res.data.user;
-  }
-  return null;
-}
+window.__DIAGRAM__ = { Api, Toast, UI, Theme, SideMenu, ICONS, DevErrors, user: BOOT.user ?? null, BOOT, IS_DEV };
 
-const BOOT = parseBoot();
-
-async function bootApp() {
-  Theme.init();
-  let user = BOOT.user;
-  if (!user && document.documentElement.dataset.auth === "auto") {
-    user = await fetchMe();
-  }
-  if (BOOT.csrfToken) Api.csrfToken = BOOT.csrfToken;
-  window.__DIAGRAM__ = { Api, Toast, UI, Theme, SideMenu, ICONS, user, BOOT };
-  return user;
+// Trang lỗi (404/500...) ở development: server nhúng sẵn chi tiết lỗi → hiện toast ngay.
+if (IS_DEV && BOOT.debugError) {
+  Toast.debug({ source: "server", ...BOOT.debugError });
 }

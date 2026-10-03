@@ -148,7 +148,9 @@
     if (!ok) return;
     const res = await Api.post("/api/v1/auth/logout-all");
     if (res.success) {
-      Toast.ok(`Đã đăng xuất ${res.data.revoked - 1} thiết bị khác.`);
+      Toast.ok(res.data.revoked > 0 ? `Đã đăng xuất ${res.data.revoked} thiết bị khác.` : "Không có thiết bị nào khác đang đăng nhập.");
+    } else {
+      Toast.error(res.error?.message || "Không thực hiện được.");
     }
   });
 })();

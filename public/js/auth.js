@@ -6,6 +6,7 @@
 
   const isRegister = Boolean(document.getElementById("registerForm"));
   const form = document.getElementById(isRegister ? "registerForm" : "loginForm");
+  if (!form) return;
   const submitBtn = document.getElementById("submitBtn");
   const formAlert = document.getElementById("formAlert");
 
@@ -85,13 +86,21 @@
         const details = res.error?.details;
         if (details) {
           for (const [field, msg] of Object.entries(details)) {
-            setFieldError(field.replace("_", ""), msg);
+            setFieldError(field === "_" ? "" : field, msg);
           }
           showAlert("Vui lòng sửa các lỗi dưới đây.");
+          Toast.error("Dữ liệu chưa hợp lệ, vui lòng kiểm tra lại các ô nhập.");
         } else {
-          showAlert(res.error?.message || "Có lỗi xảy ra, vui lòng thử lại.");
+          const msg = res.error?.message || "Có lỗi xảy ra, vui lòng thử lại.";
+          showAlert(msg);
+          Toast.error(msg);
         }
       }
+    } catch (err) {
+      // Lỗi bất ngờ (bug): hiện toast; ở development bấm vào toast để xem stack trace.
+      showAlert("Có lỗi xảy ra, vui lòng thử lại.");
+      Toast.error("Có lỗi xảy ra, vui lòng thử lại.");
+      throw err; // để DevErrors ghi lại + hiện toast chi tiết
     } finally {
       submitBtn.disabled = false;
       submitBtn.removeAttribute("aria-busy");

@@ -10,7 +10,7 @@
     actions.replaceChildren();
     const themeBtn = document.createElement("button");
     themeBtn.className = "hamburger";
-    themeBtn.setAttribute("aria-label", "Doi chu de sang/tai");
+    themeBtn.setAttribute("aria-label", "Đổi chủ đề sáng/tối");
     themeBtn.innerHTML = ICONS.theme;
     themeBtn.addEventListener("click", () => Theme.toggle());
     actions.appendChild(themeBtn);
@@ -32,7 +32,7 @@
       reg.className = "btn btn-primary";
       reg.href = "/register";
       reg.textContent = "Đăng ký";
-      actions.appendChild(login, reg);
+      actions.append(login, reg);
       const menuBtn = document.getElementById("menuBtn");
       if (menuBtn) menuBtn.hidden = false;
     }
