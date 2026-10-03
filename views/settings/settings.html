@@ -14,7 +14,7 @@
 
   <header class="site-header">
     <div style="display:flex;align-items:center;gap:10px;">
-      <button class="hamburger" id="menuBtn" aria-label="Mo menu"></button>
+      <button class="hamburger" id="menuBtn" aria-label="Mở menu"></button>
       <a class="brand" href="/">
         <svg width="26" height="26" viewBox="0 0 64 64" fill="none" aria-hidden="true">
           <rect x="4" y="4" width="56" height="56" rx="14" fill="#4f46e5"/>
@@ -26,7 +26,7 @@
       </a>
     </div>
     <div class="header-actions">
-      <button class="hamburger" id="themeBtn" aria-label="Doi chu de"></button>
+      <button class="hamburger" id="themeBtn" aria-label="Đổi chủ đề"></button>
     </div>
   </header>
 
@@ -38,7 +38,7 @@
     <div class="settings-grid">
       <section class="card settings-card">
         <h2><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg> Hồ sơ</h2>
-        <form id="profileForm" novalidate>
+        <form id="profileForm" method="post" action="/settings" novalidate>
           <div class="field">
             <label for="p-username">Tên đăng nhập</label>
             <input class="input" id="p-username" name="username" required minlength="3" maxlength="32">
@@ -55,7 +55,7 @@
 
       <section class="card settings-card">
         <h2><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Đổi mật khẩu</h2>
-        <form id="passwordForm" novalidate>
+        <form id="passwordForm" method="post" action="/settings" novalidate>
           <div class="field">
             <label for="cur-password">Mật khẩu hiện tại</label>
             <input class="input" type="password" id="cur-password" name="currentPassword" autocomplete="current-password" required>
@@ -82,7 +82,7 @@
             <div class="label">Chủ đề</div>
             <div class="desc">Sáng / tối / theo hệ thống</div>
           </div>
-          <div class="row" role="radiogroup" aria-label="Chu de" id="themeGroup">
+          <div class="row" role="radiogroup" aria-label="Chủ đề" id="themeGroup">
             <button class="btn btn-sm btn-secondary theme-opt" data-theme="light" role="radio" aria-checked="false">Sáng</button>
             <button class="btn btn-sm btn-secondary theme-opt" data-theme="dark" role="radio" aria-checked="false">Tối</button>
             <button class="btn btn-sm btn-secondary theme-opt" data-theme="system" role="radio" aria-checked="false">Hệ thống</button>
