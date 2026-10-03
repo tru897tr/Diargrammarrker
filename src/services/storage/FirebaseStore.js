@@ -16,7 +16,7 @@ const log = createLogger('firebase-store');
  */
 
 const NOT_IMPL = (method) => {
-  const err = new Error(`FirebaseStore.${method} chua duoc trien khai. Xem docs/FIREBASE.md.`);
+  const err = new Error(`FirebaseStore.${method} chưa được triển khai. Xem docs/FIREBASE.md.`);
   err.code = 'STORAGE_NOT_IMPLEMENTED';
   return err;
 };
@@ -35,7 +35,7 @@ export class FirebaseStore {
   /** TODO(FIREBASE): init firebase-admin va gán this.db = admin.firestore(). */
   async connect() {
     if (!FirebaseStore.isConfigured(this.config)) {
-      const err = new Error('Thieu FIREBASE_* environment variables.');
+      const err = new Error('Thiếu các biến môi trường FIREBASE_*.');
       err.code = 'FIREBASE_NOT_CONFIGURED';
       throw err;
     }
@@ -48,6 +48,7 @@ export class FirebaseStore {
   // ---------------------------------------------------------------- user ---
   async createUser() { throw NOT_IMPL('createUser'); }
   async getUserById() { throw NOT_IMPL('getUserById'); }
+  async getUserWithHashById() { throw NOT_IMPL('getUserWithHashById'); }
   async getUserByEmail() { throw NOT_IMPL('getUserByEmail'); }
   async getUserByUsername() { throw NOT_IMPL('getUserByUsername'); }
   async countUsers() { throw NOT_IMPL('countUsers'); }

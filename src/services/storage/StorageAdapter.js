@@ -13,6 +13,8 @@ export const StorageAdapter = {
     createUser: 'async',
     // getUserById(id) -> User | null
     getUserById: 'async',
+    // getUserWithHashById(id) -> User & { passwordHash } | null  (chỉ dùng nội bộ cho xác thực)
+    getUserWithHashById: 'async',
     // getUserByEmail(email) -> User | null
     getUserByEmail: 'async',
     // getUserByUsername(username) -> User | null
@@ -33,7 +35,7 @@ export const StorageAdapter = {
     touchSession: 'async',
     // deleteSession(id) -> void
     deleteSession: 'async',
-    // deleteSessionsForUser(userId) -> number so session bi xoa
+    // deleteSessionsForUser(userId, exceptSessionId?) -> number so session bi xoa (tru exceptSessionId)
     deleteSessionsForUser: 'async',
     // countActiveSessions() -> number
     countActiveSessions: 'async',

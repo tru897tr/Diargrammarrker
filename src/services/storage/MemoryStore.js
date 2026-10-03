@@ -74,6 +74,15 @@ export class MemoryStore {
     return u ? toPublicUser(u) : null;
   }
 
+  /**
+   * Chỉ dùng nội bộ cho xác thực (đăng nhập / đổi mật khẩu): trả về user KÈM passwordHash.
+   * Không bao giờ trả giá trị này ra API.
+   */
+  async getUserWithHashById(id) {
+    const u = this.users.get(id);
+    return u ? { ...u } : null;
+  }
+
   async getUserByEmail(email) {
     const e = String(email).toLowerCase();
     for (const u of this.users.values()) {
@@ -153,10 +162,11 @@ export class MemoryStore {
     return this.sessions.delete(id);
   }
 
-  async deleteSessionsForUser(userId) {
+  /** Xóa mọi session của user, trừ `exceptSessionId` (nếu có). Trả về số session đã xóa. */
+  async deleteSessionsForUser(userId, exceptSessionId = null) {
     let n = 0;
     for (const [id, s] of this.sessions) {
-      if (s.userId === userId) { this.sessions.delete(id); n++; }
+      if (s.userId === userId && id !== exceptSessionId) { this.sessions.delete(id); n++; }
     }
     return n;
   }

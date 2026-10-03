@@ -28,6 +28,7 @@ function withRepositories(base) {
     user: base.user ?? {
       createUser: (...a) => base.createUser(...a),
       getUserById: (...a) => base.getUserById(...a),
+      getUserWithHashById: (...a) => base.getUserWithHashById(...a),
       getUserByEmail: (...a) => base.getUserByEmail(...a),
       getUserByUsername: (...a) => base.getUserByUsername(...a),
       countUsers: (...a) => base.countUsers(...a),
