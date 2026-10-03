@@ -28,10 +28,10 @@
 
       <div class="form-alert" id="formAlert" role="alert"></div>
 
-      <form id="registerForm" novalidate>
+      <form id="registerForm" method="post" action="/register" novalidate>
         <div class="field">
           <label for="username">Tên đăng nhập</label>
-          <input class="input" type="text" id="username" name="username" autocomplete="username" required minlength="3" maxlength="32" placeholder="vi du: hoaithanh">
+          <input class="input" type="text" id="username" name="username" autocomplete="username" required minlength="3" maxlength="32" placeholder="ví dụ: hoaithanh">
           <div class="field-error" id="err-username"></div>
           <div class="field-hint">3–32 ký tự: chữ, số, . _ -</div>
         </div>
