@@ -15,11 +15,11 @@
 
   <div class="editor-root">
     <div class="editor-topbar">
-      <button class="hamburger" id="menuBtn" aria-label="Mo menu"></button>
+      <button class="hamburger" id="menuBtn" aria-label="Mở menu"></button>
       <input class="diagram-name-input" id="diagramName" placeholder="Sơ đồ chưa đặt tên" maxlength="120" aria-label="Tên sơ đồ">
       <span class="save-state" id="saveState"></span>
       <div class="topbar-right">
-        <button class="btn btn-secondary btn-sm panel-toggle" id="panelToggle" aria-label="Mo panel kieu"></button>
+        <button class="btn btn-secondary btn-sm panel-toggle" id="panelToggle" aria-label="Mở bảng kiểu"></button>
         <button class="btn btn-primary btn-sm" id="saveBtn">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
           Lưu
@@ -28,16 +28,16 @@
     </div>
 
     <div class="editor-body">
-      <div class="tool-rail" id="toolRail" role="toolbar" aria-label="Cong cu ve"></div>
+      <div class="tool-rail" id="toolRail" role="toolbar" aria-label="Công cụ vẽ"></div>
 
       <div class="canvas-host" id="canvasHost">
         <svg class="diagram-svg" id="svgRoot" xmlns="http://www.w3.org/2000/svg"></svg>
         <div class="canvas-hud">
-          <button class="hud-btn" id="zoomOut" aria-label="Thu nho"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M8 11h6M21 21l-4.3-4.3"/></svg></button>
+          <button class="hud-btn" id="zoomOut" aria-label="Thu nhỏ"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M8 11h6M21 21l-4.3-4.3"/></svg></button>
           <span class="hud-zoom" id="zoomLabel">100%</span>
-          <button class="hud-btn" id="zoomIn" aria-label="Phong to"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M11 8v6M8 11h6M21 21l-4.3-4.3"/></svg></button>
-          <button class="hud-btn" id="fitBtn" aria-label="Xem toan bo"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>
-          <button class="hud-btn" id="resetZoom" aria-label="Dat lai zoom"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5"/></svg></button>
+          <button class="hud-btn" id="zoomIn" aria-label="Phóng to"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M11 8v6M8 11h6M21 21l-4.3-4.3"/></svg></button>
+          <button class="hud-btn" id="fitBtn" aria-label="Xem toàn bộ"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>
+          <button class="hud-btn" id="resetZoom" aria-label="Đặt lại zoom"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5"/></svg></button>
         </div>
       </div>
 
