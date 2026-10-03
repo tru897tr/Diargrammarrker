@@ -1,4 +1,7 @@
 import 'dotenv/config';
+import crypto from 'node:crypto';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 function envStr(name, fallback = '') {
   const v = process.env[name];
@@ -10,16 +13,26 @@ function envInt(name, fallback) {
   return Number.isFinite(v) ? v : fallback;
 }
 
-const isProduction = envStr('NODE_ENV') === 'production';
+const nodeEnv = envStr('NODE_ENV', 'development');
+const isProduction = nodeEnv === 'production';
+const isTest = nodeEnv === 'test';
+// Môi trường development: hiện chi tiết lỗi (stack, file:dòng) dưới dạng toast + popup.
+// Chỉ bật khi NODE_ENV=development (mặc định khi không đặt NODE_ENV).
+const isDevelopment = nodeEnv === 'development';
+
+// Thư mục gốc của project, không phụ thuộc vào nơi chạy lệnh `node`.
+const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 function generateSecret(prefix) {
   return `${prefix}-dev-${crypto.randomUUID()}${crypto.randomUUID()}`;
 }
 
 export const config = {
-  env: envStr('NODE_ENV', 'development'),
+  env: nodeEnv,
   isProduction,
-  isTest: process.env.NODE_ENV === 'test',
+  isDevelopment,
+  isTest,
+  rootDir,
   port: envInt('PORT', 3000),
   host: '0.0.0.0',
   appUrl: envStr('APP_URL', `http://localhost:${envInt('PORT', 3000)}`),

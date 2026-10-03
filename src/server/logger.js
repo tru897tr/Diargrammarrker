@@ -1,7 +1,8 @@
 import { config } from './config.js';
 
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
-const current = LEVELS[config.isTest ? 'error' : 'info'] ?? 20;
+// test: chỉ lỗi | development: đầy đủ (debug) | production: từ info trở lên
+const current = LEVELS[config.isTest ? 'error' : config.isDevelopment ? 'debug' : 'info'] ?? 20;
 
 function fmt(id) {
   const ts = new Date().toISOString();
