@@ -64,6 +64,62 @@
       </div>
     </section>
 
+    <section class="mt-3" id="backupSection" aria-labelledby="backupTitle">
+      <h2 id="backupTitle" style="margin:0 0 6px;font-size:18px;">Sao lưu &amp; khôi phục dữ liệu</h2>
+      <p class="text-soft" style="margin:0 0 14px;font-size:14px;">
+        Xuất toàn bộ dữ liệu trang web ra một tệp JSON và nhập lại khi cần
+        (ví dụ sau khi máy chủ khởi động lại và kho lưu trữ tạm thời bị xóa).
+      </p>
+
+      <div class="backup-grid">
+        <div class="card backup-card">
+          <h3>Xuất dữ liệu</h3>
+          <p class="text-soft">Chọn loại dữ liệu cần đưa vào tệp sao lưu.</p>
+          <div class="check-list">
+            <label class="check-row"><input type="checkbox" id="expUsers" checked>
+              <span>Tài khoản người dùng <small>(gồm mã băm mật khẩu để đăng nhập lại được)</small></span></label>
+            <label class="check-row"><input type="checkbox" id="expDiagrams" checked>
+              <span>Sơ đồ <small>(toàn bộ nội dung)</small></span></label>
+            <label class="check-row"><input type="checkbox" id="expShares" checked>
+              <span>Liên kết chia sẻ <small>(còn hiệu lực)</small></span></label>
+          </div>
+          <div class="notice notice-warn" role="note">
+            Tệp chứa mã băm mật khẩu và token chia sẻ — hãy lưu ở nơi an toàn, không gửi cho người khác.
+            Phiên đăng nhập không được sao lưu.
+          </div>
+          <button class="btn btn-primary" id="exportBtn" type="button">Tải tệp sao lưu (.json)</button>
+        </div>
+
+        <div class="card backup-card">
+          <h3>Nhập dữ liệu</h3>
+          <p class="text-soft">Chọn tệp sao lưu đã xuất từ trang này.</p>
+          <input class="input" type="file" id="importFile" accept=".json,application/json" aria-label="Chọn tệp sao lưu">
+          <div id="importError" class="field-error" role="alert" hidden></div>
+
+          <div id="importOptions" hidden>
+            <div class="import-meta" id="importMeta"></div>
+
+            <fieldset class="opt-group">
+              <legend>Chế độ nhập</legend>
+              <label class="check-row"><input type="radio" name="importMode" value="merge" checked>
+                <span><b>Gộp</b> <small>— thêm mới &amp; cập nhật, không xóa gì. Tài khoản trùng email được gộp; tài khoản của bạn giữ nguyên.</small></span></label>
+              <label class="check-row"><input type="radio" name="importMode" value="replace">
+                <span><b>Thay thế</b> <small>— xóa dữ liệu hiện có của các mục được chọn rồi thay bằng nội dung tệp.</small></span></label>
+            </fieldset>
+
+            <fieldset class="opt-group">
+              <legend>Dữ liệu cần nhập</legend>
+              <label class="check-row"><input type="checkbox" id="impUsers"><span>Tài khoản người dùng</span></label>
+              <label class="check-row"><input type="checkbox" id="impDiagrams"><span>Sơ đồ</span></label>
+              <label class="check-row"><input type="checkbox" id="impShares"><span>Liên kết chia sẻ</span></label>
+            </fieldset>
+          </div>
+
+          <button class="btn btn-primary" id="importBtn" type="button" disabled>Kiểm tra &amp; nhập dữ liệu</button>
+        </div>
+      </div>
+    </section>
+
     <div class="mt-3 mb-3 card" id="sysCard" hidden>
       <h2 style="margin:0 0 12px;font-size:16px;">Hệ thống</h2>
       <div id="sysInfo" class="mono text-soft" style="font-size:13px;line-height:2"></div>
@@ -72,5 +128,6 @@
 
   <script src="/js/core.js"></script>
   <script src="/js/admin.js"></script>
+  <script src="/js/admin-backup.js"></script>
 </body>
 </html>

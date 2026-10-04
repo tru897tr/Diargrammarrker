@@ -4,6 +4,8 @@ import { config } from '../server/config.js';
  * Helmet config + CSP chặt cho app same-origin.
  * - default-src 'self': mọi script/style/font/img đều phải cùng origin.
  * - KHÔNG có script CDN — assets build local trong public/.
+ * - Ngoại lệ duy nhất: Google Fonts (chỉ CSS + file phông) để editor dùng được nhiều phông chữ.
+ *   Không cho phép script hay kết nối dữ liệu tới bên ngoài.
  * - Không cho phép <script> inline (các view dùng file /js/*.js).
  * - style-src-attr 'unsafe-inline': cho phép thuộc tính style="..." trong HTML
  *   (các view dùng style="..." cho layout). Thẻ <style> và script inline vẫn bị chặn.
@@ -14,10 +16,10 @@ import { config } from '../server/config.js';
 const cspDirectives = {
   defaultSrc: ["'self'"],
   scriptSrc: ["'self'"],
-  styleSrc: ["'self'"],
+  styleSrc: ["'self'", 'https://fonts.googleapis.com'],
   styleSrcAttr: ["'unsafe-inline'"],
   imgSrc: ["'self'", 'data:'],
-  fontSrc: ["'self'"],
+  fontSrc: ["'self'", 'https://fonts.gstatic.com'],
   connectSrc: ["'self'"],
   objectSrc: ["'none'"],
   baseUri: ["'self'"],

@@ -1,4 +1,47 @@
-# Danh sách thay đổi (bản sửa lỗi)
+# Danh sách thay đổi
+
+## Bản cập nhật: sửa lỗi canvas + định dạng chữ/xoay + sao lưu dữ liệu
+
+### Lỗi đã sửa (trình soạn thảo)
+| Lỗi | Nguyên nhân | File |
+|---|---|---|
+| `NotFoundError: Failed to execute 'insertBefore'` tại `CanvasView.buildGrid` → **không mở được trang `/create`** | `buildGrid()` chạy khi `scene` chưa là con của `<svg>`. Nay dựng DOM đúng thứ tự: `defs` → lưới → `scene` | `public/js/editor-canvas.js` |
+| Undo chậm một bước (lần Ctrl+Z đầu không có tác dụng), undo còn kéo viewport về chỗ cũ | History lưu trạng thái *sau* thao tác và không có trạng thái gốc | `editor-canvas.js` |
+| Dòng chữ đầu tiên bị đẩy xuống thêm một dòng | `dy` của `tspan` luôn bằng một dòng | `editor-canvas.js` |
+| Nhân bản/dán đường thẳng không dịch vị trí | Chỉ cộng vào `x, y`, không cộng vào `points` | `public/js/editor.js` |
+| Gõ số trong panel (vd cỡ chữ "24") mất focus sau ký tự đầu; bảng chọn màu đóng ngay | Panel bị dựng lại sau mỗi lần `input` | `editor.js` |
+| Kéo bảng chọn màu tạo hàng chục bước undo | Mỗi sự kiện `input` là một snapshot | `editor-canvas.js` (gộp bước) |
+| Phím mũi tên không di chuyển được đường thẳng | Chỉ đổi `x, y` | `editor.js` |
+| Lưu sơ đồ bị từ chối khi dùng phông/thuộc tính mới | Schema zod chỉ cho `sans/serif/mono` | `src/validation/schema.js` |
+
+### Tính năng mới: định dạng chữ & xoay (giống PowerPoint)
+- **Phông chữ**: 16 phông có sẵn trên máy + 29 Google Fonts hỗ trợ tiếng Việt (tải khi dùng, có phông dự phòng khi offline) + nhập tên phông bất kỳ.
+- **Cỡ chữ**: ô nhập + danh sách cỡ chuẩn, nút `A−`/`A+` (nhảy theo bậc 8, 9, 10, 11, 12, 14, 16…), `Ctrl+Shift+<` / `>`, `Ctrl+[` / `]` (±1 điểm).
+- **Phóng to/thu nhỏ chữ**: kéo góc của khung *Text* để scale chữ theo tỉ lệ; kéo cạnh để đặt bề rộng (tự xuống dòng).
+- **Vừa với khung**: Không / *Thu chữ khi tràn* / *Giãn khung theo chữ*.
+- **Kiểu chữ**: đậm, nghiêng, gạch chân, gạch ngang (`Ctrl+B/I/U`), màu chữ, căn ngang & dọc, giãn dòng, giãn chữ, IN HOA/thường/Viết Hoa.
+- **Xoay khung**: núm tròn phía trên (giữ `Shift` = bước 15°), ô nhập góc, nút ±15° / ±90°; chọn nhiều phần tử → xoay cả nhóm quanh tâm chung. Đổi cỡ khung đã xoay giữ nguyên góc đối diện. Connector bám đúng điểm neo của hình đã xoay.
+- **Xoay chữ trong khung** (độc lập với khung): góc bất kỳ hoặc ↺/↻ 90°.
+- Vị trí/kích thước X, Y, Rộng, Cao; kiểu nét viền (liền/đứt/chấm); nhấp đúp hoặc `Enter`/`F2` để sửa chữ ngay trên canvas (ô nhập khớp phông, cỡ, màu và góc xoay).
+- Các nhóm trong panel thu gọn được. Trang chia sẻ dùng cùng engine nên hiển thị đúng phông/góc xoay; dữ liệu cũ vẫn mở bình thường.
+
+### Tính năng mới: sao lưu & khôi phục (trang Quản lý trang web)
+- **Xuất**: tải một tệp JSON gồm tài khoản (kèm mã băm mật khẩu), sơ đồ, liên kết chia sẻ; chọn từng loại; có checksum SHA-256.
+- **Nhập**: kiểm tra toàn bộ tệp → hộp xem trước (thêm/cập nhật/bỏ qua bao nhiêu) → xác nhận mới ghi.
+  - *Gộp*: không xóa gì; tài khoản trùng email được gộp (sơ đồ chuyển về tài khoản đó); trùng tên đăng nhập tự đổi tên; tài khoản đang đăng nhập không bao giờ bị ghi đè.
+  - *Thay thế*: thay các mục được chọn; chặn nếu kết quả không còn admin nào hoạt động; cảnh báo nếu bạn sẽ bị đăng xuất.
+- Phiên đăng nhập không được sao lưu. Chỉ admin dùng được (backend kiểm tra), giới hạn tốc độ, giới hạn kích thước tệp nhập (mặc định 30 MB, đổi bằng `IMPORT_MAX_MB`) và chỉ được đọc *sau khi* xác thực admin.
+- CSP: cho phép đúng `fonts.googleapis.com` (CSS) và `fonts.gstatic.com` (tệp phông), không mở script/kết nối ngoài.
+
+### Chạy test
+```bash
+npm install
+npm test            # gồm tests/backup.test.js (13 ca)
+```
+
+---
+
+## Bản sửa lỗi trước đó
 
 ## Lỗi đã sửa
 | Lỗi | Nguyên nhân | File |

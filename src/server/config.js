@@ -61,6 +61,8 @@ export const config = {
   limits: {
     // Gioi han size de bao ve RAM (bytes + so luong)
     jsonBodyBytes: 512 * 1024,
+    // Tệp sao lưu/khôi phục của admin (mặc định 30 MB, chỉnh bằng IMPORT_MAX_MB).
+    importBodyBytes: Math.max(1, envInt('IMPORT_MAX_MB', 30)) * 1024 * 1024,
     diagramNameLength: 120,
     usernameMin: 3,
     usernameMax: 32,

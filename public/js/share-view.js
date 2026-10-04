@@ -29,7 +29,7 @@
 
 function ShareRenderer(svg, host, data) {
   const SVGNS = "http://www.w3.org/2000/svg";
-  const { Render, wrapText } = window.__DIAGRAM_ENGINE__;
+  const { Render, DiagramDoc, FontCatalog } = window.__DIAGRAM_ENGINE__;
 
   function el(tag, attrs = {}) {
     const node = document.createElementNS(SVGNS, tag);
@@ -60,28 +60,27 @@ function ShareRenderer(svg, host, data) {
     document.getElementById("zoomLabel").textContent = Math.round(this.zoom * 100) + "%";
   };
 
-  for (const e of data.elements) {
-    scene.appendChild(Render.element(e));
-  }
+  // Chuẩn hóa dữ liệu bằng chính engine của editor (kích thước chữ, góc xoay, phông chữ...).
+  const doc = new DiagramDoc(data);
+  const draw = () => {
+    scene.replaceChildren();
+    for (const e of doc.elements) scene.appendChild(Render.element(e));
+  };
+  draw();
+  // Phông Google Fonts tải xong → đo lại chữ rồi vẽ lại.
+  FontCatalog.onChange(() => { doc.refit(); draw(); });
 
   this.fit = () => {
-    const elements = data.elements;
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const e of elements) {
-      const xs = e.points ? e.points.map((p) => p[0]) : [e.x, e.x + (e.width || 0)];
-      const ys = e.points ? e.points.map((p) => p[1]) : [e.y, e.y + (e.height || 0)];
-      minX = Math.min(minX, ...xs); minY = Math.min(minY, ...ys);
-      maxX = Math.max(maxX, ...xs); maxY = Math.max(maxY, ...ys);
-    }
+    const bnd = doc.bounds(doc.elements);
     const r = host.getBoundingClientRect();
-    if (minX === Infinity || (maxX - minX < 1 && maxY - minY < 1)) {
+    if (!bnd || (bnd.w < 1 && bnd.h < 1)) {
       this.panX = r.width / 2; this.panY = r.height / 2; this.zoom = 1;
     } else {
       const pad = 60;
-      this.zoom = Math.min((r.width - pad * 2) / Math.max(maxX - minX, 1), (r.height - pad * 2) / Math.max(maxY - minY, 1), 4);
+      this.zoom = Math.min((r.width - pad * 2) / Math.max(bnd.w, 1), (r.height - pad * 2) / Math.max(bnd.h, 1), 4);
       this.zoom = Math.max(this.zoom, 0.05);
-      this.panX = r.width / 2 - (minX + (maxX - minX) / 2) * this.zoom;
-      this.panY = r.height / 2 - (minY + (maxY - minY) / 2) * this.zoom;
+      this.panX = r.width / 2 - (bnd.minX + bnd.w / 2) * this.zoom;
+      this.panY = r.height / 2 - (bnd.minY + bnd.h / 2) * this.zoom;
     }
     this.applyTransform();
   };

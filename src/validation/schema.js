@@ -91,6 +91,9 @@ const num = z.number().finite();
 const colorRegex = /^(#[0-9a-fA-F]{3,8}|rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\)|[a-zA-Z]{3,32})$/;
 const color = z.string().trim().max(64).regex(colorRegex, 'Màu không hợp lệ.');
 
+/** Tên phông chữ: chữ (kể cả có dấu), số, khoảng trắng, _ . - — không cho phép dấu nháy/ngoặc để không chèn được CSS. */
+const fontFamilyName = z.string().trim().min(1).max(80).regex(/^[\p{L}\p{N} _.\-]+$/u, 'Tên phông chữ không hợp lệ.');
+
 const styleSchema = z
   .object({
     fill: color.optional(),
@@ -99,12 +102,21 @@ const styleSchema = z
     strokeDasharray: z.string().trim().max(64).regex(/^[0-9,\s]*$/).optional(),
     opacity: num.min(0).max(1).optional(),
     radius: num.min(0).max(512).optional(),
-    fontSize: num.min(6).max(200).optional(),
+    // --- chữ ---
+    fontSize: num.min(4).max(1000).optional(),
     fontWeight: z.enum(['normal', 'bold']).optional(),
     fontStyle: z.enum(['normal', 'italic']).optional(),
-    textDecoration: z.enum(['none', 'underline']).optional(),
+    textDecoration: z.enum(['none', 'underline', 'line-through', 'underline line-through']).optional(),
     textAlign: z.enum(['left', 'center', 'right']).optional(),
-    fontFamily: z.enum(['sans', 'serif', 'mono']).optional(),
+    verticalAlign: z.enum(['top', 'middle', 'bottom']).optional(),
+    // 'sans' | 'serif' | 'mono' là giá trị của bản cũ, vẫn hợp lệ theo quy tắc tên phông.
+    fontFamily: fontFamilyName.optional(),
+    lineHeight: num.min(0.8).max(4).optional(),
+    letterSpacing: num.min(-10).max(100).optional(),
+    textTransform: z.enum(['none', 'upper', 'lower', 'capitalize']).optional(),
+    autoFit: z.enum(['none', 'shrink', 'resize']).optional(),
+    wrap: z.boolean().optional(),
+    textRotation: num.min(-3600).max(3600).optional(),
     textColor: color.optional(),
     background: color.optional(),
     lineType: z.enum(['solid', 'dashed', 'dotted']).optional(),

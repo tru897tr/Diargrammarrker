@@ -207,21 +207,59 @@ input[type="color"].style-input {
 .style-opt.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .panel-empty { color: var(--text-faint); font-size: 13px; text-align: center; padding: 24px 8px; }
 
-/* Text edit overlay */
+/* Panel sections (giống nhóm Font / Paragraph / Arrange của PowerPoint) */
+.panel-section {
+  padding: 12px 0 2px;
+  border-top: 1px solid var(--border);
+  margin-top: 6px;
+}
+.panel-section:first-of-type { border-top: none; margin-top: 0; padding-top: 4px; }
+.panel-section > summary {
+  list-style: none;
+  cursor: pointer;
+  margin: 0 0 10px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-faint);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  user-select: none;
+}
+.panel-section > summary::-webkit-details-marker { display: none; }
+.panel-section > summary::after { content: "▾"; font-size: 12px; transition: transform 0.15s; }
+.panel-section:not([open]) > summary { margin-bottom: 8px; }
+.panel-section:not([open]) > summary::after { transform: rotate(-90deg); }
+.panel-section > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.style-opts .style-opt { flex: 1 1 0; min-width: 0; padding: 6px 4px; font-size: 12.5px; line-height: 1.2; overflow-wrap: anywhere; }
+.size-row { display: flex; align-items: center; gap: 6px; }
+.size-row > .style-input { flex: 1; min-width: 0; }
+.size-row > .style-opt { flex: 0 0 auto; padding: 6px 9px; white-space: nowrap; }
+.mini-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.mini-field > span { font-size: 11px; color: var(--text-faint); font-weight: 600; }
+.style-opts { flex-wrap: wrap; }
+.style-opt { min-width: 0; font-family: var(--font); }
+.style-opt:focus-visible, .style-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+select.style-input { cursor: pointer; }
+.panel-tips { margin-top: 14px; padding: 12px; border-radius: var(--radius-sm); background: var(--bg-soft); color: var(--text-soft); font-size: 12px; }
+.panel-tips > div { font-weight: 700; margin-bottom: 6px; color: var(--text); }
+.panel-tips ul { margin: 0; padding-left: 16px; display: grid; gap: 4px; }
+
+/* Text edit overlay: kích thước/phông/góc xoay được đặt bằng JS để khớp đúng với chữ trên canvas */
 .text-editor-overlay {
   position: absolute;
   z-index: 90;
-  min-width: 40px;
-  border: 1.5px dashed var(--accent);
+  box-sizing: border-box;
+  margin: 0;
+  min-width: 0;
+  border: none;
+  outline: 1.5px dashed var(--accent);
+  outline-offset: 0;
   background: transparent;
-  outline: none;
   resize: none;
   overflow: hidden;
-  padding: 2px 4px;
-  margin: 0;
-  line-height: 1.25;
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
 /* Mobile */
@@ -312,7 +350,8 @@ input[type="color"].style-input {
 .resize-handle {
   fill: var(--bg-elev);
   stroke: var(--accent);
-  stroke-width: 1.5;
   cursor: nwse-resize;
 }
+.rotate-handle { cursor: grab; }
+.rotate-handle:active { cursor: grabbing; }
 .connector-hit { stroke: transparent; stroke-width: 14; fill: none; cursor: move; }

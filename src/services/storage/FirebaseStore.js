@@ -79,6 +79,10 @@ export class FirebaseStore {
   async getShareByDiagram() { throw NOT_IMPL('getShareByDiagram'); }
   async revokeShare() { throw NOT_IMPL('revokeShare'); }
   async countActiveShares() { throw NOT_IMPL('countActiveShares'); }
+
+  // ------------------------------------------------------- backup/restore ---
+  async exportAll() { throw NOT_IMPL('exportAll'); }
+  async applySnapshot() { throw NOT_IMPL('applySnapshot'); }
 }
 
 log.debug('FirebaseStore skeleton loaded');

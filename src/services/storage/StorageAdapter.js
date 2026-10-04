@@ -70,6 +70,12 @@ export const StorageAdapter = {
     // countActiveShares() -> number
     countActiveShares: 'async',
   },
+  backup: {
+    // exportAll() -> { users: User&{passwordHash}[], diagrams: Diagram[], shares: Share[] } (chi share con hieu luc)
+    exportAll: 'async',
+    // applySnapshot({ replace: {users?,diagrams?,shares?}, users, diagrams, shares }) -> { users, diagrams, shares } (so luong sau khi ap dung)
+    applySnapshot: 'async',
+  },
 };
 
 export default StorageAdapter;

@@ -3,7 +3,13 @@
 
 (async function () {
   const { Api, Toast, UI, Theme, SideMenu, ICONS, user, BOOT } = window.__DIAGRAM__;
-  const { DiagramDoc, History, CanvasView, Render, updateConnectorPoints, el, uid, snap, GRID, DEFAULT_STYLES } = window.__DIAGRAM_ENGINE__;
+  const {
+    DiagramDoc, History, CanvasView, Render, Layout, Geometry, Transform, FontCatalog,
+    anchorPoint, nearestSide, updateConnectorPoints,
+    el, uid, snap, clamp, normAngle, rotPoint, round2, isLineType, stepFontSize,
+    GRID, DEFAULT_STYLES, FONT_SIZE_PRESETS, MIN_FONT, MAX_FONT, TEXT_TYPES,
+  } = window.__DIAGRAM_ENGINE__;
+  const DEG = Math.PI / 180;
 
   const isEdit = BOOT.mode === "edit" && BOOT.diagram;
   const diagramId = isEdit ? BOOT.diagram.id : null;
@@ -31,6 +37,10 @@
   let clipboard = null;
   let dirty = false;
   let suppressDirty = false;
+  let editingId = null;      // phần tử đang sửa chữ (ẩn chữ SVG để không bị chồng)
+  let rotateHud = null;      // nhãn góc xoay khi đang kéo núm xoay
+
+  const selected = () => [...selection].map((id) => doc.byId(id)).filter(Boolean);
 
   /* ============ dirty tracking + unload guard ============ */
 
@@ -54,7 +64,7 @@
     }
   });
 
-  /** Dialog canh bao truoc khi roi editor. */
+  /** Dialog cảnh báo trước khi rời editor. */
   let leaving = false;
   async function confirmLeave(destination) {
     if (!dirty || leaving) return true;
@@ -73,7 +83,7 @@
       return true;
     }
     if (choice === "leave") {
-      dirty = false; // cho phep di
+      dirty = false; // cho phép đi
       return true;
     }
     return false;
@@ -128,8 +138,8 @@
     b.setAttribute("aria-pressed", tool === t.id ? "true" : "false");
     b.innerHTML = ICONS[t.icon];
     b.addEventListener("click", () => {
-      if (t.id === "undo") { history.undo(); renderAll(); return; }
-      if (t.id === "redo") { history.redo(); renderAll(); return; }
+      if (t.id === "undo") { undo(); return; }
+      if (t.id === "redo") { redo(); return; }
       setTool(t.id);
     });
     toolRail.appendChild(b);
@@ -145,6 +155,13 @@
     host.style.cursor = t === "hand" ? "grab" : t === "select" ? "default" : "crosshair";
   }
   setTool("select");
+
+  function afterHistoryJump() {
+    selection = new Set([...selection].filter((id) => doc.byId(id)));
+    renderAll();
+  }
+  function undo() { history.undo(); afterHistoryJump(); }
+  function redo() { history.redo(); afterHistoryJump(); }
 
   /* ============ side menu + theme ============ */
 
@@ -177,7 +194,7 @@
   nameInput.addEventListener("input", markDirty);
   nameInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); nameInput.blur(); save(); }
-    e.stopPropagation(); // tranh trigger shortcut editor
+    e.stopPropagation(); // tránh trigger shortcut editor
   });
 
   /* ============ save ============ */
@@ -206,12 +223,13 @@
         if (!isEdit) {
           leaving = true;
           window.history.replaceState(null, "", `/edit/${res.data.diagram.id}`);
-          // Cap nhat trang thai local de luu tiep lai la PATCH
+          // Cập nhật trạng thái local để lưu tiếp lại là PATCH
           window.location.reload();
         }
         return true;
       }
-      Toast.error(res.error?.message || "Không lưu được.");
+      const fields = res.error?.details ? Object.entries(res.error.details).slice(0, 2).map(([k, v]) => `${k}: ${v}`).join(" · ") : "";
+      Toast.error((res.error?.message || "Không lưu được.") + (fields ? ` (${fields})` : ""));
       return false;
     } finally {
       btn.disabled = false;
@@ -222,75 +240,163 @@
 
   /* ============ render ============ */
 
-  function renderAll() {
+  function renderScene() {
     view.content.replaceChildren();
-    // Cap nhat connector gan shape truoc
+    // Cập nhật connector gắn shape trước
     for (const e of doc.elements) {
       if (e.type === "connector" || ((e.type === "arrow" || e.type === "line") && (e.startId || e.endId))) {
         updateConnectorPoints(doc, e);
       }
     }
     for (const e of doc.elements) {
-      const node = Render.element(e);
+      const node = Render.element(e, { hideText: e.id === editingId });
       if (selection.has(e.id)) node.classList.add("selected");
       view.content.appendChild(node);
     }
     renderOverlay();
+  }
+
+  function renderAll() {
+    renderScene();
     renderStylePanel();
   }
 
-  function renderOverlay() {
-    view.overlay.replaceChildren();
-    for (const id of selection) {
-      const e = doc.byId(id);
-      if (!e) continue;
-      if (["line", "arrow", "connector"].includes(e.type) && e.points) continue; // khong resize connector
-      const s = 8 / view.zoom;
-      const r = el("rect", {
-        x: e.x - s, y: e.y - s, width: (e.width || 0) + s * 2, height: (e.height || 0) + s * 2,
-        fill: "none", stroke: "var(--accent)", "stroke-width": 1.5 / view.zoom, "stroke-dasharray": `${4 / view.zoom} ${3 / view.zoom}`,
-        class: "selection-box",
-      });
-      view.overlay.appendChild(r);
-      if (selection.size === 1) {
-        const hs = Math.min(10 / view.zoom, (e.width || 20) / 4, (e.height || 20) / 4);
-        for (const [hx, hy, cur] of [
-          [e.x, e.y, "nw"], [e.x + (e.width || 0), e.y, "ne"],
-          [e.x, e.y + (e.height || 0), "sw"], [e.x + (e.width || 0), e.y + (e.height || 0), "se"],
-        ]) {
-          const h = el("rect", { x: hx - hs / 2, y: hy - hs / 2, width: hs, height: hs, class: `resize-handle ${cur}` });
-          view.overlay.appendChild(h);
-        }
-      }
-    }
-  }
-
   let rafPending = false;
-  function requestRender() {
+  let rafFull = false;
+  /** Vẽ lại ở khung hình kế tiếp. full = true: cập nhật cả panel thuộc tính. */
+  function requestRender(full = false) {
+    rafFull = rafFull || full;
     if (rafPending) return;
     rafPending = true;
     requestAnimationFrame(() => {
       rafPending = false;
-      renderAll();
+      const f = rafFull;
+      rafFull = false;
+      if (f) renderAll(); else renderScene();
     });
+  }
+
+  /* ---- hình học của tay cầm ---- */
+
+  const HANDLE_NAMES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
+  const HANDLE_BASE = { n: 0, ne: 45, e: 90, se: 135, s: 0, sw: 45, w: 90, nw: 135 };
+
+  function handleCursor(name, rot) {
+    const a = ((((HANDLE_BASE[name] + rot) % 180) + 180) % 180) / 45;
+    return ["ns-resize", "nesw-resize", "ew-resize", "nwse-resize"][Math.round(a) % 4];
+  }
+
+  function autoHeight(e) {
+    const ts = Layout.textStyle(e);
+    return ts.autoFit === "resize" && TEXT_TYPES.has(e.type);
+  }
+
+  function isRotatable(e) {
+    if (e.type === "group" || e.type === "image") return false;
+    if (!isLineType(e.type)) return true;
+    return e.type !== "connector" && !e.startId && !e.endId && Array.isArray(e.points) && e.points.length >= 2;
+  }
+
+  function renderOverlay() {
+    view.overlay.replaceChildren();
+    const z = view.zoom;
+    const sel = selected();
+    if (sel.length === 0) return;
+    const accent = "var(--accent)";
+
+    const addRotateHandle = (parent, cx, topY) => {
+      const off = 26 / z;
+      parent.appendChild(el("line", { x1: cx, y1: topY, x2: cx, y2: topY - off, stroke: accent, "stroke-width": 1.5 / z, "pointer-events": "none" }));
+      const c = el("circle", { cx, cy: topY - off, r: 6.5 / z, fill: "var(--bg-elev)", stroke: accent, "stroke-width": 1.5 / z, class: "rotate-handle", "data-handle": "rot" });
+      c.style.cursor = "grab";
+      parent.appendChild(c);
+    };
+
+    for (const e of sel) {
+      if (isLineType(e.type)) {
+        if (e.points && e.points.length >= 2) {
+          view.overlay.appendChild(el("path", {
+            d: "M" + e.points.map((p) => `${p[0]} ${p[1]}`).join(" L"),
+            fill: "none", stroke: accent, "stroke-opacity": "0.35", "stroke-width": 8 / z,
+            "stroke-linecap": "round", "stroke-linejoin": "round", "pointer-events": "none",
+          }));
+        }
+        continue;
+      }
+      const w = e.width || 0, h = e.height || 0;
+      const [cx, cy] = Geometry.center(e);
+      const g = el("g");
+      if (e.rotation) g.setAttribute("transform", `rotate(${e.rotation} ${cx} ${cy})`);
+      g.appendChild(el("rect", {
+        x: e.x, y: e.y, width: w, height: h, fill: "none", stroke: accent,
+        "stroke-width": 1.5 / z, class: "selection-box", "pointer-events": "none",
+      }));
+      if (sel.length === 1) {
+        const hs = 9 / z;
+        const pos = {
+          nw: [e.x, e.y], n: [e.x + w / 2, e.y], ne: [e.x + w, e.y], e: [e.x + w, e.y + h / 2],
+          se: [e.x + w, e.y + h], s: [e.x + w / 2, e.y + h], sw: [e.x, e.y + h], w: [e.x, e.y + h / 2],
+        };
+        const hideNS = autoHeight(e) || w * z < 30;
+        const hideEW = h * z < 30;
+        for (const name of HANDLE_NAMES) {
+          if ((name === "n" || name === "s") && hideNS) continue;
+          if ((name === "e" || name === "w") && hideEW && !(e.type === "text")) continue;
+          const [hx, hy] = pos[name];
+          const r = el("rect", {
+            x: hx - hs / 2, y: hy - hs / 2, width: hs, height: hs, rx: 1.5 / z,
+            class: `resize-handle ${name}`, "data-handle": name, "stroke-width": 1.5 / z,
+          });
+          r.style.cursor = handleCursor(name, e.rotation || 0);
+          g.appendChild(r);
+        }
+        if (isRotatable(e)) addRotateHandle(g, e.x + w / 2, e.y);
+      }
+      view.overlay.appendChild(g);
+    }
+
+    // Nhiều phần tử (hoặc một đường tự do): khung chung + núm xoay nhóm
+    const rot = sel.filter(isRotatable);
+    const needGroupBox = sel.length > 1 || (sel.length === 1 && isLineType(sel[0].type));
+    if (needGroupBox && rot.length > 0 && rot.length === sel.filter((e) => !isLineType(e.type) || isRotatable(e)).length) {
+      const b = doc.bounds(rot);
+      if (b) {
+        view.overlay.appendChild(el("rect", {
+          x: b.minX, y: b.minY, width: b.w, height: b.h, fill: "none", stroke: accent,
+          "stroke-width": 1.5 / z, "stroke-dasharray": `${5 / z} ${4 / z}`, "pointer-events": "none",
+        }));
+        addRotateHandle(view.overlay, b.minX + b.w / 2, b.minY);
+      }
+    }
+
+    if (rotateHud) {
+      const fs = 12 / z;
+      const text = el("text", { x: rotateHud.x, y: rotateHud.y, "font-size": fs, fill: "#fff", "font-family": "system-ui, sans-serif", "font-weight": "600", "pointer-events": "none" });
+      text.textContent = rotateHud.text;
+      const wBox = (rotateHud.text.length * 0.62 + 1.2) * fs;
+      view.overlay.appendChild(el("rect", { x: rotateHud.x - 0.5 * fs, y: rotateHud.y - fs * 1.1, width: wBox, height: fs * 1.6, rx: 4 / z, fill: "#111827", "fill-opacity": "0.88", "pointer-events": "none" }));
+      view.overlay.appendChild(text);
+    }
   }
 
   /* ============ pointer interactions ============ */
 
-  let action = null; // {kind: 'draw'|'move'|'resize'|'marquee'|'connect', ...}
-
   host.addEventListener("pointerdown", (e) => {
+    if (e.target.closest && e.target.closest(".text-editor-overlay")) return;
     if (e.button === 1) { view.startPan(e); return; }
     if (e.button !== 0) return;
     if (tool === "hand") { view.startPan(e); return; }
 
+    // Núm xoay / núm đổi cỡ
+    const handle = e.target.closest ? e.target.closest("[data-handle]") : null;
+    if (handle) {
+      e.preventDefault();
+      const kind = handle.getAttribute("data-handle");
+      if (kind === "rot") startRotate(e); else startResize(kind);
+      return;
+    }
+
     const world = view.screenToWorld(e.clientX, e.clientY);
-
-    // Resize handle?
-    if (handleUnderCursor(e, world)) return;
-    // Connector anchor drag?
-    if (tryStartConnect(e, world)) return;
-
     const hit = hitElement(world);
     if (tool === "select") {
       if (hit) {
@@ -304,55 +410,35 @@
         selection.clear();
         startMarquee(e, world);
       }
-      requestRender();
+      requestRender(true);
       return;
     }
 
-    // Drawing tools
+    // Công cụ vẽ
     if (hit && (tool === "connector" || tool === "arrow")) {
       startConnectFromShape(e, world, hit);
       return;
     }
     if (tool === "text") {
+      e.preventDefault();
       createTextAt(world);
       return;
     }
     startDraw(e, world);
   });
 
-  function handleUnderCursor(_e, world) {
-    if (selection.size !== 1) return false;
-    const e0 = doc.byId([...selection][0]);
-    if (!e0 || ["line", "arrow", "connector"].includes(e0.type)) return false;
-    const hs = Math.min(10 / view.zoom, 30);
-    const corners = [
-      [e0.x, e0.y, "nw"], [e0.x + (e0.width || 0), e0.y, "ne"],
-      [e0.x, e0.y + (e0.height || 0), "sw"], [e0.x + (e0.width || 0), e0.y + (e0.height || 0), "se"],
-    ];
-    for (const [cx, cy, corner] of corners) {
-      if (Math.abs(world.x - cx) < hs && Math.abs(world.y - cy) < hs) {
-        startResize(e0, corner);
-        return true;
-      }
-    }
-    return false;
-  }
-
   function hitElement(world) {
-    // Ung cung: duyet nguoc tu tren
+    // Ưu tiên phần tử nằm trên: duyệt ngược
     for (let i = doc.elements.length - 1; i >= 0; i--) {
       const e = doc.elements[i];
-      if (["line", "arrow", "connector"].includes(e.type)) {
+      if (isLineType(e.type)) {
         if (e.points && hitPolyline(e.points, world, 10 / view.zoom)) return e;
         continue;
       }
-      if (e.type === "text") {
-        const w = measureTextWidth(e.text, e.style?.fontSize || 16);
-        if (world.x >= e.x - 4 && world.x <= e.x + w + 4 && world.y >= e.y - 4 && world.y <= e.y + (e.style?.fontSize || 16) * 1.3) return e;
-        continue;
-      }
-      const r = doc.hitRect(e);
-      if (world.x >= r.x && world.x <= r.x + r.w && world.y >= r.y && world.y <= r.y + r.h) return e;
+      const [lx, ly] = Geometry.toLocal(e, world.x, world.y);
+      const slop = e.type === "text" ? 4 : 0;
+      const w = e.width || 0, h = e.height || 0;
+      if (lx >= e.x - slop && lx <= e.x + w + slop && ly >= e.y - slop && ly <= e.y + h + slop) return e;
     }
     return null;
   }
@@ -370,10 +456,6 @@
     const t = len2 === 0 ? 0 : clamp(((px - ax) * dx + (py - ay) * dy) / len2, 0, 1);
     const cx = ax + t * dx, cy = ay + t * dy;
     return Math.hypot(px - cx, py - cy);
-  }
-
-  function measureTextWidth(text, fontSize) {
-    return (text || "").split("\n").reduce((m, l) => Math.max(m, l.length), 0) * fontSize * 0.55;
   }
 
   /* ---- draw shape ---- */
@@ -402,7 +484,7 @@
       if (sh.points) {
         sh.points[1] = [sx, sy];
         if (ev.shiftKey) {
-          // gioi han 0/45/90 do
+          // giới hạn 0/45/90 độ
           const [x0, y0] = sh.points[0];
           const dx = sx - x0, dy = sy - y0;
           const ang = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4);
@@ -427,7 +509,7 @@
       const sh = doc.byId(id);
       if (sh) {
         if (!sh.points && (sh.width < 4 || sh.height < 4)) {
-          // click don → shape mac dinh
+          // click đơn → shape mặc định
           sh.width = sh.width < 4 ? 160 : sh.width;
           sh.height = sh.height < 4 ? 90 : sh.height;
           sh.x = view.snapEnabled ? snap(sh.x) : sh.x;
@@ -440,11 +522,13 @@
       }
       history.snapshot("draw");
       action = null;
-      requestRender();
+      requestRender(true);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   }
+
+  let action = null; // {kind: 'draw'|'connect', ...}
 
   /* ---- move ---- */
 
@@ -461,17 +545,14 @@
       const w = view.screenToWorld(ev.clientX, ev.clientY);
       let dx = w.x - worldStart.x;
       let dy = w.y - worldStart.y;
+      if (!moved && Math.hypot(dx, dy) * view.zoom < 3) return; // chống rung tay khi chỉ click
       if (ev.shiftKey) {
         if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0;
       }
       if (view.snapEnabled) {
         const first = originals[0];
-        const target = doc.byId(first.id);
-        if (target) {
-          const sx = view.snapEnabled ? snap(first.x + dx) - first.x : dx;
-          const sy = view.snapEnabled ? snap(first.y + dy) - first.y : dy;
-          dx = sx; dy = sy;
-        }
+        dx = snap(first.x + dx) - first.x;
+        dy = snap(first.y + dy) - first.y;
       }
       for (const o of originals) {
         const el0 = doc.byId(o.id);
@@ -490,42 +571,144 @@
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
-      if (moved) history.snapshot("move");
+      if (moved) { history.snapshot("move"); requestRender(true); }
       action = null;
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   }
 
-  /* ---- resize ---- */
+  /* ---- resize (có tính góc xoay, giữ cố định điểm đối diện) ---- */
 
-  function startResize(e0, corner) {
-    const origin = { x: e0.x, y: e0.y, w: e0.width || 0, h: e0.height || 0 };
-    const id = e0.id;
+  function startResize(handleName) {
+    const sel = selected();
+    if (sel.length !== 1 || isLineType(sel[0].type)) return;
+    const e0 = sel[0];
+    const hx = handleName.includes("e") ? 1 : handleName.includes("w") ? -1 : 0;
+    const hy = handleName.includes("s") ? 1 : handleName.includes("n") ? -1 : 0;
+    const isText = e0.type === "text";
+    const corner = hx !== 0 && hy !== 0;
+    const scaleText = isText && corner;                 // góc của Text = phóng to/thu nhỏ chữ
+    const orig = {
+      x: e0.x, y: e0.y, w: e0.width || 0, h: e0.height || 0, rot: e0.rotation || 0,
+      fs: Layout.textStyle(e0).size, style: { ...(e0.style || {}) },
+    };
+    const cx0 = orig.x + orig.w / 2, cy0 = orig.y + orig.h / 2;
+    // Text kéo cạnh trái/phải: giữ nguyên mép trên (chiều cao tự theo chữ)
+    const ay = isText && hy === 0 ? 1 : hy;
+    const anchorLocal = [cx0 - hx * orig.w / 2, cy0 - ay * orig.h / 2];
+    const anchor = rotPoint(anchorLocal[0], anchorLocal[1], cx0, cy0, orig.rot);
+    const minW = isText ? 16 : 8, minH = isText ? 16 : 8;
+    let changed = false;
 
     const move = (ev) => {
-      const w = view.screenToWorld(ev.clientX, ev.clientY);
-      let nx = origin.x, ny = origin.y, nw = origin.w, nh = origin.h;
-      const px = view.snapEnabled ? snap(w.x) : w.x;
-      const py = view.snapEnabled ? snap(w.y) : w.y;
-      if (corner.includes("e")) { nw = px - origin.x; }
-      if (corner.includes("s")) { nh = py - origin.y; }
-      if (corner.includes("w")) { nx = px; nw = origin.x + origin.w - px; }
-      if (corner.includes("n")) { ny = py; nh = origin.y + origin.h - py; }
-      nw = Math.max(8, nw); nh = Math.max(8, nh);
-      const el0 = doc.byId(id);
-      if (el0) {
-        el0.x = nx; el0.y = ny; el0.width = nw; el0.height = nh;
-        requestRender();
+      let m = view.screenToWorld(ev.clientX, ev.clientY);
+      if (!orig.rot && view.snapEnabled && !scaleText) m = { x: snap(m.x), y: snap(m.y) };
+      const [px, py] = rotPoint(m.x, m.y, anchor[0], anchor[1], -orig.rot);
+      const ux = px - anchor[0], uy = py - anchor[1];
+      let nw = hx ? Math.max(minW, hx * ux) : orig.w;
+      let nh = hy ? Math.max(minH, hy * uy) : orig.h;
+
+      const el0 = doc.byId(e0.id);
+      if (!el0) return;
+      el0.style = { ...orig.style };
+
+      if (scaleText && orig.w > 0 && orig.h > 0) {
+        let k = (nw * orig.w + nh * orig.h) / (orig.w * orig.w + orig.h * orig.h);
+        const fs = clamp(orig.fs * k, MIN_FONT, MAX_FONT);
+        k = fs / orig.fs;
+        el0.style.fontSize = Math.round(fs * 10) / 10;
+        el0.width = orig.w * k;
+        el0.height = orig.h * k;
+        Layout.fit(el0);
+      } else {
+        if (corner && ev.shiftKey && orig.w > 0 && orig.h > 0) {
+          const k = Math.max(nw / orig.w, nh / orig.h);
+          nw = Math.max(minW, orig.w * k); nh = Math.max(minH, orig.h * k);
+        }
+        if (isText && hx !== 0 && hy === 0) { el0.style.wrap = true; }
+        el0.width = nw;
+        el0.height = nh;
+        Layout.fit(el0);
       }
+      const fw = el0.width, fh = el0.height;
+      const [ox, oy] = rotPoint(hx * fw / 2, ay * fh / 2, 0, 0, orig.rot);
+      const ncx = anchor[0] + ox, ncy = anchor[1] + oy;
+      el0.x = ncx - fw / 2;
+      el0.y = ncy - fh / 2;
+      changed = true;
+      requestRender();
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
-      history.snapshot("resize");
+      if (changed) history.snapshot("resize");
+      requestRender(true);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+  }
+
+  /* ---- rotate ---- */
+
+  function startRotate(ev) {
+    const els = selected().filter(isRotatable);
+    if (els.length === 0) return;
+    const single = els.length === 1 && !isLineType(els[0].type);
+    let pivot;
+    if (single) pivot = Geometry.center(els[0]);
+    else { const b = doc.bounds(els); pivot = [b.minX + b.w / 2, b.minY + b.h / 2]; }
+    const originals = els.map((e) => ({
+      id: e.id, x: e.x, y: e.y, rot: e.rotation || 0, points: e.points?.map((p) => [...p]),
+    }));
+    const p0 = view.screenToWorld(ev.clientX, ev.clientY);
+    const a0 = Math.atan2(p0.y - pivot[1], p0.x - pivot[0]) / DEG;
+    let changed = false;
+    host.style.cursor = "grabbing";
+
+    const move = (mv) => {
+      const w = view.screenToWorld(mv.clientX, mv.clientY);
+      const a1 = Math.atan2(w.y - pivot[1], w.x - pivot[0]) / DEG;
+      let delta = a1 - a0;
+      if (mv.shiftKey) {
+        if (single) delta = Math.round((originals[0].rot + delta) / 15) * 15 - originals[0].rot;
+        else delta = Math.round(delta / 15) * 15;
+      }
+      for (const o of originals) {
+        const e = doc.byId(o.id);
+        if (!e) continue;
+        e.x = o.x; e.y = o.y;
+        e.rotation = o.rot;
+        if (o.points) e.points = o.points.map((p) => [...p]);
+        Transform.rotateBy(e, delta, pivot);
+      }
+      const shown = single ? normAngle(originals[0].rot + delta) : normAngle(delta);
+      rotateHud = { x: w.x + 14 / view.zoom, y: w.y - 10 / view.zoom, text: `${Math.round(shown)}°` };
+      changed = true;
+      requestRender();
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      host.style.cursor = tool === "hand" ? "grab" : tool === "select" ? "default" : "crosshair";
+      rotateHud = null;
+      if (changed) history.snapshot("rotate");
+      requestRender(true);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  /** Xoay các phần tử đang chọn thêm `delta` độ (quanh tâm của chúng). */
+  function rotateSelectionBy(delta) {
+    const els = selected().filter(isRotatable);
+    if (els.length === 0) return;
+    let pivot;
+    if (els.length === 1 && !isLineType(els[0].type)) pivot = Geometry.center(els[0]);
+    else { const b = doc.bounds(els); pivot = [b.minX + b.w / 2, b.minY + b.h / 2]; }
+    for (const e of els) Transform.rotateBy(e, delta, pivot);
+    history.snapshot("rotate");
+    renderAll();
   }
 
   /* ---- marquee ---- */
@@ -557,7 +740,7 @@
               selection.add(e0.id);
             }
           }
-          requestRender();
+          requestRender(true);
         }
       }
     };
@@ -567,21 +750,16 @@
 
   /* ---- connectors ---- */
 
-  function tryStartConnect(_e, world) {
-    if (tool !== "connector" && tool !== "arrow") return false;
-    // diem cuoi connector dang chon co the drag — xu o startConnectFromShape
-    return false;
-  }
-
   function startConnectFromShape(e, world, hitShape) {
     if (["line", "arrow", "connector", "text"].includes(hitShape.type)) return;
     const id = uid();
+    const startSide = nearestSide(hitShape, [world.x, world.y]);
     const shape = {
       id, type: tool, x: world.x, y: world.y,
-      points: [[...anchorPointOf(hitShape, world)], [world.x, world.y]],
+      points: [anchorPoint(hitShape, startSide), [world.x, world.y]],
       style: { ...DEFAULT_STYLES[tool] },
       startId: hitShape.id,
-      startSide: nearestSide(hitShape, world),
+      startSide,
       endId: undefined,
     };
     doc.add(shape);
@@ -595,8 +773,8 @@
       const target = hitElement(w);
       if (target && target.id !== hitShape.id && !["line", "arrow", "connector", "text"].includes(target.type)) {
         sh.endId = target.id;
+        sh.endSide = nearestSide(target, [w.x, w.y]);
         updateConnectorPoints(doc, sh);
-        sh.points[sh.points.length - 1] = [...anchorPointOf(target, w)];
       } else {
         sh.endId = undefined;
         sh.points[sh.points.length - 1] = [w.x, w.y];
@@ -608,108 +786,214 @@
       window.removeEventListener("pointerup", up);
       const sh = doc.byId(id);
       if (!sh || !sh.endId) {
-        // Khong gan duoc → xoa
+        // Không gắn được → xóa
         if (sh) doc.remove([id]);
         selection.clear();
       } else {
         history.snapshot("connect");
       }
       action = null;
-      requestRender();
+      requestRender(true);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   }
 
-  function anchorPointOf(shape, world) {
-    return anchorPointLocal(shape, nearestSide(shape, world));
-  }
-  function anchorPointLocal(shape, side) {
-    const w = shape.width || 0, h = shape.height || 0;
-    switch (side) {
-      case "top": return [shape.x + w / 2, shape.y];
-      case "bottom": return [shape.x + w / 2, shape.y + h];
-      case "left": return [shape.x, shape.y + h / 2];
-      case "right": return [shape.x + w, shape.y + h / 2];
-    }
-    return [shape.x, shape.y];
-  }
-  function nearestSide(shape, world) {
-    const cx = shape.x + (shape.width || 0) / 2;
-    const cy = shape.y + (shape.height || 0) / 2;
-    const dx = world.x - cx, dy = world.y - cy;
-    return Math.abs(dx) * (shape.height || 1) > Math.abs(dy) * (shape.width || 1)
-      ? (dx > 0 ? "right" : "left")
-      : (dy > 0 ? "bottom" : "top");
-  }
+  /* ---- text editing (sửa chữ ngay trên canvas, đúng phông/cỡ/màu/góc xoay) ---- */
 
-  /* ---- text editing ---- */
+  let activeEditor = null; // { place(), finish(commit) }
 
   function createTextAt(world) {
     const id = uid();
-    const e = { id, type: "text", x: world.x, y: world.y, text: "", style: { ...DEFAULT_STYLES.text } };
+    const x = view.snapEnabled ? snap(world.x) : world.x;
+    const y = view.snapEnabled ? snap(world.y) : world.y;
+    const e = { id, type: "text", x, y, width: 0, height: 0, rotation: 0, text: "", style: { ...DEFAULT_STYLES.text } };
     doc.add(e);
+    Layout.fit(e);
     selection = new Set([id]);
-    renderAll();
-    editTextElement(e);
     setTool("select");
+    renderAll();
+    // Mở ô nhập ở tác vụ kế tiếp: nếu mở ngay trong pointerdown, trình duyệt sẽ chuyển focus
+    // sau sự kiện chuột và ô nhập bị blur (= commit chữ rỗng, phần tử bị xóa).
+    setTimeout(() => { if (doc.byId(id) && !activeEditor) editTextElement(e); }, 0);
   }
 
   function editTextElement(e) {
-    // overlay textarea tai vi tri element
-    const textarea = document.createElement("textarea");
-    textarea.className = "text-editor-overlay";
-    const fs = e.style?.fontSize || 16;
-    const scale = view.zoom;
-    textarea.style.left = `${e.x * scale + view.panX}px`;
-    textarea.style.top = `${e.y * scale + view.panY}px`;
-    textarea.style.fontSize = `${fs * scale}px`;
-    textarea.style.fontFamily = "Segoe UI, system-ui, sans-serif";
-    textarea.style.color = e.style?.textColor || "var(--text)";
-    textarea.style.minWidth = `${120 * scale}px`;
-    textarea.value = e.text || "";
-    host.appendChild(textarea);
-    textarea.focus();
+    if (!TEXT_TYPES.has(e.type)) return;
+    if (activeEditor) activeEditor.finish(true);
+    const orig = { text: e.text || "", width: e.width, height: e.height };
+    const ta = document.createElement("textarea");
+    ta.className = "text-editor-overlay";
+    ta.spellcheck = false;
+    ta.setAttribute("aria-label", "Nhập nội dung chữ");
+    ta.value = e.text || "";
+    host.appendChild(ta);
+    editingId = e.id;
+    let finished = false;
 
-    const finish = () => {
-      e.text = textarea.value;
-      textarea.remove();
-      if (!e.text) {
-        doc.remove([e.id]);
-        selection.delete(e.id);
-      } else {
-        history.snapshot("text");
-      }
+    const place = () => {
+      Layout.fit(e);
+      const c = Layout.compute(e);
+      const { ts, box, pad } = c;
+      const k = view.zoom;
+      const [cx, cy] = Geometry.center(e);
+      const sc = view.worldToScreen(cx, cy);
+      const wpx = box.w * k, hpx = box.h * k;
+      const st = ta.style;
+      st.left = `${sc.x - wpx / 2}px`;
+      st.top = `${sc.y - hpx / 2}px`;
+      st.width = `${wpx}px`;
+      st.height = `${hpx}px`;
+      st.transformOrigin = "50% 50%";
+      st.transform = `rotate(${(e.rotation || 0) + ts.rot}deg)`;
+      st.fontFamily = ts.stack;
+      st.fontSize = `${c.fs * k}px`;
+      st.fontWeight = String(ts.weight);
+      st.fontStyle = ts.italic ? "italic" : "normal";
+      st.color = ts.color;
+      st.textAlign = ts.align;
+      st.lineHeight = String(ts.lh);
+      st.letterSpacing = `${ts.ls * k}px`;
+      st.textTransform = ts.transform === "upper" ? "uppercase" : ts.transform === "lower" ? "lowercase" : ts.transform === "capitalize" ? "capitalize" : "none";
+      st.textDecoration = ts.deco || "none";
+      st.whiteSpace = ts.wrap ? "pre-wrap" : "pre";
+      st.overflowWrap = ts.wrap ? "anywhere" : "normal";
+      let top = pad.y;
+      if (ts.valign === "middle") top = Math.max(pad.y, (box.h - c.blockH) / 2);
+      else if (ts.valign === "bottom") top = Math.max(pad.y, box.h - pad.y - c.blockH);
+      st.padding = `${top * k}px ${pad.x * k}px 0 ${pad.x * k}px`;
+    };
+
+    const onInput = () => {
+      e.text = ta.value;
+      place();
       requestRender();
     };
-    textarea.addEventListener("blur", finish);
-    textarea.addEventListener("keydown", (ev) => {
+
+    const finish = (commit) => {
+      if (finished) return;
+      finished = true;
+      ta.removeEventListener("blur", onBlur);
+      activeEditor = null;
+      const value = ta.value;
+      ta.remove();
+      editingId = null;
+      if (commit) {
+        e.text = value;
+        if (!e.text && e.type === "text") { doc.remove([e.id]); selection.delete(e.id); }
+        else Layout.fit(e);
+        history.snapshot("text");
+      } else {
+        e.text = orig.text; e.width = orig.width; e.height = orig.height;
+        if (!orig.text && e.type === "text") { doc.remove([e.id]); selection.delete(e.id); }
+      }
+      requestRender(true);
+    };
+    const onBlur = () => finish(true);
+
+    ta.addEventListener("input", onInput);
+    ta.addEventListener("blur", onBlur);
+    ta.addEventListener("keydown", (ev) => {
       ev.stopPropagation();
-      if (ev.key === "Escape") {
-        ev.preventDefault();
-        textarea.value = e.text || "";
-        textarea.removeEventListener("blur", finish);
-        textarea.remove();
-        if (!e.text) { doc.remove([e.id]); }
-        requestRender();
-      }
-      if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) {
-        ev.preventDefault();
-        textarea.blur();
-      }
+      if (ev.key === "Escape") { ev.preventDefault(); finish(false); return; }
+      if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); ta.blur(); return; }
+      const fn = formatShortcut(ev);
+      if (fn) { ev.preventDefault(); fn(); }
+    });
+    ta.addEventListener("wheel", (ev) => ev.stopPropagation(), { passive: true });
+
+    activeEditor = { place, finish };
+    place();
+    requestRender();
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  }
+
+  // Nhấp đúp vào phần tử để sửa chữ
+  host.addEventListener("dblclick", (ev) => {
+    if (ev.target.closest && ev.target.closest(".text-editor-overlay")) return;
+    const world = view.screenToWorld(ev.clientX, ev.clientY);
+    const hit = hitElement(world);
+    if (!hit || !TEXT_TYPES.has(hit.type)) return;
+    selection = new Set([hit.id]);
+    renderAll();
+    editTextElement(hit);
+  });
+
+  /* ============ định dạng chữ: toggle / cỡ chữ (dùng cho panel và phím tắt) ============ */
+
+  const isTextEl = (e) => TEXT_TYPES.has(e.type);
+  const textItems = () => selected().filter(isTextEl);
+
+  /** Áp dụng patch style do fn(item) trả về cho các phần tử đang chọn (đã lọc). */
+  function applyEach(fn, { label = "style", coalesce, filter } = {}) {
+    const items = filter ? selected().filter(filter) : selected();
+    if (items.length === 0) return;
+    for (const item of items) {
+      const patch = fn(item);
+      if (patch) item.style = { ...(item.style || {}), ...patch };
+      Layout.fit(item);
+    }
+    history.snapshot(label, coalesce);
+    renderAll();
+    if (activeEditor) activeEditor.place();
+  }
+  const applyStyle = (patch, coalesce, filter) => applyEach(() => patch, { coalesce, filter });
+  const applyText = (patchOrFn, coalesce) =>
+    applyEach(typeof patchOrFn === "function" ? patchOrFn : () => patchOrFn, { coalesce, filter: isTextEl });
+
+  function decoParts(s) {
+    const d = String(s?.textDecoration || "none");
+    return { u: d.includes("underline"), s: d.includes("line-through") };
+  }
+  function toggleDeco(which) {
+    const items = textItems();
+    if (items.length === 0) return;
+    const turnOn = !decoParts(items[0].style)[which];
+    applyText((item) => {
+      const p = decoParts(item.style);
+      p[which] = turnOn;
+      const parts = [];
+      if (p.u) parts.push("underline");
+      if (p.s) parts.push("line-through");
+      return { textDecoration: parts.join(" ") || "none" };
+    });
+  }
+  function toggleBold() {
+    const items = textItems();
+    if (items.length) applyText({ fontWeight: items[0].style?.fontWeight === "bold" ? "normal" : "bold" });
+  }
+  function toggleItalic() {
+    const items = textItems();
+    if (items.length) applyText({ fontStyle: items[0].style?.fontStyle === "italic" ? "normal" : "italic" });
+  }
+  /** mode "step": nhảy theo dãy cỡ chuẩn (8, 9, 10, 11, 12, 14, 16…); mode "pt": ±1. */
+  function changeFontSize(mode, dir) {
+    applyText((item) => {
+      const cur = Layout.textStyle(item).size;
+      const next = mode === "step" ? stepFontSize(cur, dir) : cur + dir;
+      return { fontSize: Math.round(clamp(next, MIN_FONT, MAX_FONT) * 10) / 10 };
     });
   }
 
-  // Double click vao element de edit text
-  host.addEventListener("dblclick", (e) => {
-    const world = view.screenToWorld(e.clientX, e.clientY);
-    const hit = hitElement(world);
-    if (!hit) return;
-    if (["line", "arrow", "connector"].includes(hit.type)) return;
-    if (hit.type === "text") { editTextElement(hit); return; }
-    // them label cho shape
-    editTextElement(hit);
-  });
+  /** Phím tắt định dạng giống PowerPoint. Trả về hàm thực thi hoặc null. */
+  function formatShortcut(ev) {
+    const mod = ev.ctrlKey || ev.metaKey;
+    if (!mod || ev.altKey) return null;
+    if (textItems().length === 0) return null;
+    if (ev.shiftKey) {
+      if (ev.key === ">" || ev.code === "Period") return () => changeFontSize("step", +1);
+      if (ev.key === "<" || ev.code === "Comma") return () => changeFontSize("step", -1);
+      return null;
+    }
+    const k = ev.key.toLowerCase();
+    if (k === "b") return toggleBold;
+    if (k === "i") return toggleItalic;
+    if (k === "u") return () => toggleDeco("u");
+    if (ev.key === "]") return () => changeFontSize("pt", +1);
+    if (ev.key === "[") return () => changeFontSize("pt", -1);
+    return null;
+  }
 
   /* ============ keyboard shortcuts ============ */
 
@@ -720,14 +1004,12 @@
 
     if (mod && key === "z") {
       e.preventDefault();
-      if (e.shiftKey) { history.redo(); } else { history.undo(); }
-      renderAll();
+      if (e.shiftKey) redo(); else undo();
       return;
     }
     if (mod && key === "y") {
       e.preventDefault();
-      history.redo();
-      renderAll();
+      redo();
       return;
     }
     if (mod && key === "s") {
@@ -735,6 +1017,8 @@
       save();
       return;
     }
+    const fmt = formatShortcut(e);
+    if (fmt) { e.preventDefault(); fmt(); return; }
     if (mod && key === "c") {
       e.preventDefault();
       copySelection();
@@ -767,18 +1051,20 @@
       renderAll();
       return;
     }
+    if ((e.key === "Enter" || e.key === "F2") && selection.size === 1) {
+      const only = selected()[0];
+      if (only && TEXT_TYPES.has(only.type)) { e.preventDefault(); editTextElement(only); return; }
+    }
     if (e.key.startsWith("Arrow") && selection.size > 0) {
       e.preventDefault();
       const step = e.shiftKey ? 1 : GRID;
-      for (const id of selection) {
-        const el0 = doc.byId(id);
-        if (!el0) continue;
-        if (e.key === "ArrowLeft") el0.x -= step;
-        if (e.key === "ArrowRight") el0.x += step;
-        if (e.key === "ArrowUp") el0.y -= step;
-        if (e.key === "ArrowDown") el0.y += step;
-      }
-      history.snapshot("nudge");
+      let dx = 0, dy = 0;
+      if (e.key === "ArrowLeft") dx = -step;
+      if (e.key === "ArrowRight") dx = step;
+      if (e.key === "ArrowUp") dy = -step;
+      if (e.key === "ArrowDown") dy = step;
+      for (const el0 of selected()) Transform.translate(el0, dx, dy);
+      history.snapshot("nudge", "nudge");
       renderAll();
       return;
     }
@@ -797,7 +1083,7 @@
   /* ============ clipboard / duplicate / delete ============ */
 
   function serializeSelection() {
-    return [...selection].map((id) => doc.byId(id)).filter(Boolean).map((e) => JSON.parse(JSON.stringify(e)));
+    return selected().map((e) => JSON.parse(JSON.stringify(e)));
   }
 
   function copySelection() {
@@ -808,14 +1094,12 @@
 
   function pasteClipboard() {
     if (!clipboard || clipboard.length === 0) return;
-    history.snapshot("paste-before");
     const map = {};
     for (const item of clipboard) {
-      const copy = JSON.parse(JSON.stringify(item));
+      const copy = doc.migrate(JSON.parse(JSON.stringify(item)));
       copy.id = uid();
       map[item.id] = copy.id;
-      copy.x += GRID * 2;
-      copy.y += GRID * 2;
+      Transform.translate(copy, GRID * 2, GRID * 2);
       doc.add(copy);
     }
     // remap connector refs
@@ -858,7 +1142,7 @@
     if (selection.size < 2) return;
     const ids = [...selection];
     const g = { id: uid(), type: "group", x: 0, y: 0, width: 0, height: 0, children: ids, style: {} };
-    // tinh bounds
+    // tính bounds
     const els = ids.map((id) => doc.byId(id)).filter(Boolean);
     const b = doc.bounds(els);
     if (b) { g.x = b.minX; g.y = b.minY; g.width = b.w; g.height = b.h; }
@@ -872,190 +1156,301 @@
   /* ============ style panel ============ */
 
   const stylePanel = document.getElementById("stylePanel");
+  let panelSig = "";
+
+  /** Tạo phần tử DOM gọn: h("div", {class, text, onClick…}, ...con). */
+  function h(tag, props = {}, ...kids) {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (v == null || v === false) continue;
+      if (k === "class") n.className = v;
+      else if (k === "text") n.textContent = v;
+      else if (k === "style" && typeof v === "object") Object.assign(n.style, v);
+      else if (k.length > 2 && k.startsWith("on")) n.addEventListener(k.slice(2).toLowerCase(), v);
+      else if (k !== "list" && k in n) n[k] = v;
+      else n.setAttribute(k, v === true ? "" : v);
+    }
+    for (const kid of kids.flat()) if (kid != null && kid !== false) n.append(kid);
+    return n;
+  }
+
+  const toHex = (c) => {
+    if (typeof c !== "string") return null;
+    if (/^#[0-9a-f]{6}$/i.test(c)) return c.toLowerCase();
+    if (/^#[0-9a-f]{3}$/i.test(c)) return "#" + c.slice(1).split("").map((x) => x + x).join("").toLowerCase();
+    return null;
+  };
+
+  function mkColor(value, onInput, label) {
+    const input = h("input", { type: "color", class: "style-input", value: toHex(value) || "#000000", "aria-label": label || "Chọn màu" });
+    input.addEventListener("input", () => onInput(input.value));
+    return input;
+  }
+  function mkNum(value, min, max, step, onCommit, attrs = {}) {
+    const shown = String(round2(value));
+    const input = h("input", { type: "number", class: "style-input", min, max, step, value: shown, ...attrs });
+    input.addEventListener("change", () => {
+      const v = parseFloat(input.value);
+      if (!Number.isFinite(v)) { input.value = shown; return; }
+      onCommit(clamp(v, min, max));
+    });
+    input.addEventListener("keydown", (ev) => { ev.stopPropagation(); if (ev.key === "Enter") input.blur(); });
+    return input;
+  }
+  const collapsedSections = new Set();
+  const section = (title, ...kids) => {
+    const d = h("details", { class: "panel-section" }, h("summary", { text: title }), h("div", { class: "panel-section-body" }, ...kids));
+    d.open = !collapsedSections.has(title);
+    d.addEventListener("toggle", () => { if (d.open) collapsedSections.delete(title); else collapsedSections.add(title); });
+    return d;
+  };
+  const row = (label, ...kids) => h("div", { class: "style-row" }, label ? h("label", { text: label }) : null, ...kids);
+  const optGroup = (...btns) => h("div", { class: "style-opts" }, ...btns);
+  const optBtn = (label, active, onClick, attrs = {}) =>
+    h("button", { type: "button", class: "style-opt" + (active ? " active" : ""), "aria-pressed": active ? "true" : "false", onClick, ...attrs },
+      typeof label === "string" ? document.createTextNode(label) : label);
+  const miniField = (label, input) => h("div", { class: "mini-field" }, h("span", { text: label }), input);
+
+  function askFontName() {
+    let value = "";
+    const input = h("input", { type: "text", class: "input", maxLength: 80, placeholder: "Ví dụ: Bahnschrift, Arial Narrow…", "aria-label": "Tên phông chữ" });
+    input.addEventListener("input", () => { value = input.value; });
+    input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); UI.closeModal(null, "ok"); } });
+    const body = h("div", {},
+      h("p", { text: "Nhập đúng tên một phông đã cài trên máy. Người xem chưa cài phông này sẽ thấy phông thay thế." }),
+      input);
+    return UI.modal({
+      title: "Phông chữ khác",
+      body,
+      actions: [{ label: "Hủy", class: "btn-secondary", value: "cancel" }, { label: "Áp dụng", class: "btn-primary", value: "ok" }],
+    }).then((v) => (v === "ok" ? FontCatalog.clean(value) : ""));
+  }
+
+  function fontSelect(current, onPick) {
+    const wanted = current || FontCatalog.DEFAULT_FONT;
+    const known = FontCatalog.find(wanted);
+    const curName = known ? known.name : (FontCatalog.clean(wanted) || FontCatalog.DEFAULT_FONT);
+    const select = h("select", { class: "style-input", "aria-label": "Phông chữ" });
+    if (!known) select.append(h("option", { value: curName, text: `${curName} (tự nhập)` }));
+    for (const g of FontCatalog.groups) {
+      const og = h("optgroup", { label: g.label });
+      for (const f of g.fonts) {
+        const opt = h("option", { value: f.name, text: f.name });
+        opt.style.fontFamily = f.stack;
+        og.append(opt);
+      }
+      select.append(og);
+    }
+    select.append(h("option", { value: "__custom__", text: "Nhập tên phông khác…" }));
+    select.value = curName;
+    select.addEventListener("change", async () => {
+      if (select.value === "__custom__") {
+        const name = await askFontName();
+        if (name) onPick(name); else select.value = curName;
+        return;
+      }
+      onPick(select.value);
+    });
+    return select;
+  }
+
+  function setGeom(patch) {
+    const e = selected()[0];
+    if (!e || isLineType(e.type)) return;
+    if ("width" in patch) { patch.width = Math.max(8, patch.width); if (e.type === "text") e.style = { ...(e.style || {}), wrap: true }; }
+    if ("height" in patch) patch.height = Math.max(8, patch.height);
+    Object.assign(e, patch);
+    Layout.fit(e);
+    history.snapshot("geom");
+    renderAll();
+  }
+  function setRotationAbs(deg) {
+    const els = selected().filter(isRotatable);
+    for (const e of els) Transform.setRotation(e, deg);
+    history.snapshot("rotate");
+    renderAll();
+  }
 
   function renderStylePanel() {
-    const sel = [...selection].map((id) => doc.byId(id)).filter(Boolean);
+    const sel = selected();
+    const sig = sel.map((e) => e.id + ":" + e.type).join("|");
+    const ae = document.activeElement;
+    // Đang gõ/chọn trong panel và vẫn cùng vùng chọn → không dựng lại (giữ focus, giữ bảng chọn màu)
+    if (sig === panelSig && ae && stylePanel.contains(ae) && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName)) return;
+    panelSig = sig;
+    stylePanel.replaceChildren();
+
     if (sel.length === 0) {
-      stylePanel.innerHTML = "";
-      const empty = document.createElement("div");
-      empty.className = "panel-empty";
-      empty.textContent = "Chọn một phần tử để chỉnh kiểu.";
-      stylePanel.appendChild(empty);
+      stylePanel.append(
+        h("div", { class: "panel-empty", text: "Chọn một phần tử để chỉnh kiểu." }),
+        h("div", { class: "panel-tips" },
+          h("div", { text: "Gợi ý nhanh" }),
+          h("ul", {},
+            h("li", { text: "Nhấp đúp để sửa chữ" }),
+            h("li", { text: "Kéo núm tròn phía trên để xoay (giữ Shift: bước 15°)" }),
+            h("li", { text: "Ctrl+B / I / U: đậm / nghiêng / gạch chân" }),
+            h("li", { text: "Ctrl+Shift+< hoặc >: giảm / tăng cỡ chữ" }),
+            h("li", { text: "Ctrl+[ hoặc ]: giảm / tăng 1 điểm" }),
+            h("li", { text: "Text: kéo góc để phóng to/thu nhỏ chữ" }),
+          )));
       return;
     }
-    const e = sel[0];
-    const s = e.style || {};
-    const isLine = ["line", "arrow", "connector"].includes(e.type);
 
-    stylePanel.replaceChildren();
-    const title = document.createElement("h3");
-    title.textContent = sel.length > 1 ? `${sel.length} phần tử` : typeLabel(e.type);
-    stylePanel.appendChild(title);
+    const refText = sel.find(isTextEl);
+    const refShape = sel.find((e) => !isLineType(e.type));
+    const refLine = sel.find((e) => isLineType(e.type));
+    const e0 = sel[0];
 
-    const mkRow = (labelText, input) => {
-      const row = document.createElement("div");
-      row.className = "style-row";
-      const label = document.createElement("label");
-      label.textContent = labelText;
-      row.appendChild(label);
-      row.appendChild(input);
-      stylePanel.appendChild(row);
-      return row;
-    };
-    const mkColor = (value, onInput) => {
-      const input = document.createElement("input");
-      input.type = "color";
-      input.className = "style-input";
-      input.value = normalizeColor(value) || "#000000";
-      input.addEventListener("input", () => onInput(input.value));
-      return input;
-    };
-    const mkNumber = (value, min, max, step, onInput) => {
-      const input = document.createElement("input");
-      input.type = "number";
-      input.className = "style-input";
-      input.value = value;
-      input.min = min; input.max = max; input.step = step;
-      input.addEventListener("input", () => onInput(+input.value));
-      return input;
-    };
+    stylePanel.append(h("h3", { text: sel.length > 1 ? `${sel.length} phần tử` : typeLabel(e0.type) }));
 
-    const applyStyle = (patch, snapshotLabel) => {
-      for (const item of sel) {
-        item.style = { ...(item.style || {}), ...patch };
-      }
-      history.snapshot(snapshotLabel);
-      renderAll();
-    };
+    /* ---------- Chữ ---------- */
+    if (refText) {
+      const ts = Layout.textStyle(refText);
+      const plain = refText.type === "text";
+      const s = refText.style || {};
+      const dp = decoParts(s);
 
-    if (!isLine) {
-      mkRow("Fill", mkColor(s.fill, (v) => applyStyle({ fill: v }, "style")));
-      const row = document.createElement("div");
-      row.className = "style-row";
-      const lab = document.createElement("label");
-      lab.textContent = "Border";
-      row.appendChild(lab);
-      const cols = document.createElement("div");
-      cols.className = "style-cols";
-      cols.appendChild(mkColor(s.stroke, (v) => applyStyle({ stroke: v }, "style")));
-      cols.appendChild(mkNumber(s.strokeWidth ?? 1.5, 0, 64, 0.5, (v) => applyStyle({ strokeWidth: v }, "style")));
-      row.appendChild(cols);
-      stylePanel.appendChild(row);
-      if (["rectangle", "rounded-rectangle", "note", "frame"].includes(e.type)) {
-        mkRow("Bo góc", mkNumber(s.radius ?? 0, 0, 512, 1, (v) => applyStyle({ radius: v }, "style")));
-      }
-      mkRow("Cỡ chữ", mkNumber(s.fontSize ?? 15, 6, 200, 1, (v) => applyStyle({ fontSize: v }, "style")));
-    } else {
-      mkRow("Màu đường", mkColor(s.stroke, (v) => applyStyle({ stroke: v }, "style")));
-      mkRow("Độ dày", mkNumber(s.strokeWidth ?? 2, 0, 64, 0.5, (v) => applyStyle({ strokeWidth: v }, "style")));
-      const row = document.createElement("div");
-      row.className = "style-row";
-      const lab = document.createElement("label");
-      lab.textContent = "Kiểu nét";
-      row.appendChild(lab);
-      const opts = document.createElement("div");
-      opts.className = "style-opts";
-      const lineTypes = [["solid", "Liền"], ["dashed", "Đứt"], ["dotted", "Chấm"]];
-      for (const [val, lab2] of lineTypes) {
-        const b = document.createElement("button");
-        b.className = "style-opt" + ((s.lineType || "solid") === val ? " active" : "");
-        b.textContent = lab2;
-        b.addEventListener("click", () => applyStyle({ lineType: val, strokeDasharray: val === "dashed" ? "8 6" : val === "dotted" ? "2 4" : "" }, "style"));
-        opts.appendChild(b);
-      }
-      row.appendChild(opts);
-      stylePanel.appendChild(row);
-      // arrows
-      for (const [field, lab2] of [["arrowStart", "Đầu"], ["arrowEnd", "Cuối"]]) {
-        const row2 = document.createElement("div");
-        row2.className = "style-row";
-        const l2 = document.createElement("label");
-        l2.textContent = `Mũi tên ${lab2.toLowerCase()}`;
-        row2.appendChild(l2);
-        const opts2 = document.createElement("div");
-        opts2.className = "style-opts";
-        for (const [val, lab3] of [["none", "Không"], ["arrow", "Mở"], ["triangle", "Đầy"]]) {
-          const b = document.createElement("button");
-          b.className = "style-opt" + ((s[field] || "none") === val ? " active" : "");
-          b.textContent = lab3;
-          b.addEventListener("click", () => applyStyle({ [field]: val }, "style"));
-          opts2.appendChild(b);
+      const sizeInput = mkNum(ts.size, MIN_FONT, MAX_FONT, 1, (v) => applyText({ fontSize: Math.round(v * 10) / 10 }), { list: "fontSizeList", "aria-label": "Cỡ chữ" });
+      const datalist = h("datalist", { id: "fontSizeList" }, FONT_SIZE_PRESETS.map((p) => h("option", { value: String(p) })));
+
+      stylePanel.append(
+        section("Chữ",
+          row("Phông chữ", fontSelect(s.fontFamily, (name) => { FontCatalog.ensure(name); applyText({ fontFamily: name }); })),
+          row("Cỡ chữ",
+            h("div", { class: "size-row" },
+              h("button", { type: "button", class: "style-opt", title: "Giảm cỡ chữ (Ctrl+Shift+<)", "aria-label": "Giảm cỡ chữ", text: "A−", onClick: () => changeFontSize("step", -1) }),
+              sizeInput,
+              h("button", { type: "button", class: "style-opt", title: "Tăng cỡ chữ (Ctrl+Shift+>)", "aria-label": "Tăng cỡ chữ", text: "A+", onClick: () => changeFontSize("step", +1) }),
+            ), datalist),
+          row("Kiểu chữ", optGroup(
+            optBtn(h("b", { text: "B" }), s.fontWeight === "bold", toggleBold, { title: "Đậm (Ctrl+B)", "aria-label": "Đậm" }),
+            optBtn(h("i", { text: "I" }), s.fontStyle === "italic", toggleItalic, { title: "Nghiêng (Ctrl+I)", "aria-label": "Nghiêng" }),
+            optBtn(h("u", { text: "U" }), dp.u, () => toggleDeco("u"), { title: "Gạch chân (Ctrl+U)", "aria-label": "Gạch chân" }),
+            optBtn(h("s", { text: "S" }), dp.s, () => toggleDeco("s"), { title: "Gạch ngang", "aria-label": "Gạch ngang" }),
+          )),
+          row("Màu chữ", mkColor(s.textColor, (v) => applyText({ textColor: v }, "textColor"), "Màu chữ")),
+          row("Căn ngang", optGroup(
+            ...[["left", "Trái"], ["center", "Giữa"], ["right", "Phải"]].map(([val, lab]) =>
+              optBtn(lab, ts.align === val, () => applyText({ textAlign: val })))
+          )),
+          row("Căn dọc", optGroup(
+            ...[["top", "Trên"], ["middle", "Giữa"], ["bottom", "Dưới"]].map(([val, lab]) =>
+              optBtn(lab, ts.valign === val, () => applyText({ verticalAlign: val })))
+          )),
+          h("div", { class: "style-cols style-row" },
+            miniField("Giãn dòng", mkNum(ts.lh, 0.8, 4, 0.05, (v) => applyText({ lineHeight: round2(v) }))),
+            miniField("Giãn chữ (px)", mkNum(ts.ls, -10, 100, 0.5, (v) => applyText({ letterSpacing: round2(v) }))),
+          ),
+          row("Kiểu chữ hoa/thường", (() => {
+            const sel2 = h("select", { class: "style-input", "aria-label": "Chữ hoa thường" },
+              ...[["none", "Bình thường"], ["upper", "CHỮ IN HOA"], ["lower", "chữ in thường"], ["capitalize", "Viết Hoa Đầu Từ"]]
+                .map(([v, t]) => h("option", { value: v, text: t })));
+            sel2.value = ts.transform;
+            sel2.addEventListener("change", () => applyText({ textTransform: sel2.value }));
+            return sel2;
+          })()),
+          row("Vừa với khung", optGroup(
+            optBtn("Không", ts.autoFit === "none", () => applyText({ autoFit: "none" }), { title: "Giữ nguyên cỡ chữ và khung" }),
+            optBtn("Thu chữ", ts.autoFit === "shrink", () => applyText({ autoFit: "shrink" }), { title: "Tự thu nhỏ chữ khi tràn khung (như PowerPoint)" }),
+            optBtn("Giãn khung", ts.autoFit === "resize", () => applyText({ autoFit: "resize" }), { title: "Tự giãn khung vừa với chữ" }),
+          )),
+          plain ? null : row("Xoay chữ trong khung",
+            h("div", { class: "size-row" },
+              mkNum(ts.rot, -360, 360, 1, (v) => applyText({ textRotation: v }), { "aria-label": "Góc xoay chữ (độ)" }),
+              h("button", { type: "button", class: "style-opt", text: "↺ 90°", title: "Xoay chữ 90° ngược chiều kim đồng hồ", onClick: () => applyText((it) => ({ textRotation: normAngle((+it.style?.textRotation || 0) - 90) })) }),
+              h("button", { type: "button", class: "style-opt", text: "↻ 90°", title: "Xoay chữ 90° theo chiều kim đồng hồ", onClick: () => applyText((it) => ({ textRotation: normAngle((+it.style?.textRotation || 0) + 90) })) }),
+            ),
+            optGroup(optBtn("Đặt lại góc chữ", false, () => applyText({ textRotation: 0 }))),
+          ),
+        ),
+      );
+    }
+
+    /* ---------- Vị trí, kích thước, xoay khung ---------- */
+    const rotatable = sel.filter(isRotatable);
+    if (rotatable.length > 0 || (sel.length === 1 && refShape)) {
+      const single = sel.length === 1 && !isLineType(e0.type);
+      const geomKids = [];
+      if (rotatable.length > 0) {
+        if (single) {
+          geomKids.push(row("Góc xoay khung",
+            h("div", { class: "size-row" },
+              mkNum(e0.rotation || 0, 0, 360, 1, (v) => setRotationAbs(v), { "aria-label": "Góc xoay khung (độ)" }),
+              h("button", { type: "button", class: "style-opt", text: "Đặt lại", title: "Về 0°", onClick: () => setRotationAbs(0) }),
+            )));
         }
-        row2.appendChild(opts2);
-        stylePanel.appendChild(row2);
+        geomKids.push(row(single ? "" : "Xoay nhóm", optGroup(
+          optBtn("↺ 90°", false, () => rotateSelectionBy(-90), { title: "Xoay 90° ngược chiều kim đồng hồ" }),
+          optBtn("↻ 90°", false, () => rotateSelectionBy(90), { title: "Xoay 90° theo chiều kim đồng hồ" }),
+          optBtn("−15°", false, () => rotateSelectionBy(-15)),
+          optBtn("+15°", false, () => rotateSelectionBy(15)),
+        )));
       }
+      if (single) {
+        geomKids.push(
+          h("div", { class: "style-cols style-row" },
+            miniField("X", mkNum(e0.x, -1e6, 1e6, 1, (v) => setGeom({ x: v }))),
+            miniField("Y", mkNum(e0.y, -1e6, 1e6, 1, (v) => setGeom({ y: v }))),
+            miniField("Rộng", mkNum(e0.width || 0, 8, 100000, 1, (v) => setGeom({ width: v }))),
+            miniField("Cao", mkNum(e0.height || 0, 8, 100000, 1, (v) => setGeom({ height: v }))),
+          ));
+      }
+      stylePanel.append(section("Khung & xoay", ...geomKids));
     }
 
-    // opacity + text chung
-    mkRow("Độ mờ", mkNumber(s.opacity ?? 1, 0, 1, 0.05, (v) => applyStyle({ opacity: v }, "style")));
-
-    if (!isLine) {
-      const rowT = document.createElement("div");
-      rowT.className = "style-row";
-      const labT = document.createElement("label");
-      labT.textContent = "Màu chữ";
-      rowT.appendChild(labT);
-      rowT.appendChild(mkColor(s.textColor, (v) => applyStyle({ textColor: v }, "style")));
-      stylePanel.appendChild(rowT);
-
-      const rowA = document.createElement("div");
-      rowA.className = "style-row";
-      const labA = document.createElement("label");
-      labA.textContent = "Căn lề";
-      rowA.appendChild(labA);
-      const optsA = document.createElement("div");
-      optsA.className = "style-opts";
-      for (const [val, lab2] of [["left", "Trái"], ["center", "Giữa"], ["right", "Phải"]]) {
-        const b = document.createElement("button");
-        b.className = "style-opt" + ((s.textAlign || "center") === val ? " active" : "");
-        b.textContent = lab2;
-        b.addEventListener("click", () => applyStyle({ textAlign: val }, "style"));
-        optsA.appendChild(b);
-      }
-      rowA.appendChild(optsA);
-      stylePanel.appendChild(rowA);
-
-      const rowF = document.createElement("div");
-      rowF.className = "style-row";
-      const labF = document.createElement("label");
-      labF.textContent = "Kiểu chữ";
-      rowF.appendChild(labF);
-      const optsF = document.createElement("div");
-      optsF.className = "style-opts";
-      const wBtn = document.createElement("button");
-      wBtn.className = "style-opt" + (s.fontWeight === "bold" ? " active" : "");
-      wBtn.textContent = "Đậm";
-      wBtn.addEventListener("click", () => applyStyle({ fontWeight: s.fontWeight === "bold" ? "normal" : "bold" }, "style"));
-      const iBtn = document.createElement("button");
-      iBtn.className = "style-opt" + (s.fontStyle === "italic" ? " active" : "");
-      iBtn.textContent = "Nghiêng";
-      iBtn.addEventListener("click", () => applyStyle({ fontStyle: s.fontStyle === "italic" ? "normal" : "italic" }, "style"));
-      optsF.append(wBtn, iBtn);
-      rowF.appendChild(optsF);
-      stylePanel.appendChild(rowF);
+    /* ---------- Hình dạng ---------- */
+    if (refShape && refShape.type !== "group") {
+      const s = refShape.style || {};
+      const lt = s.lineType || (s.strokeDasharray ? "dashed" : "solid");
+      const isRect = ["rectangle", "rounded-rectangle", "note", "frame", "text"].includes(refShape.type);
+      const notLine = (e) => !isLineType(e.type) && e.type !== "group";
+      const hasFill = s.fill && s.fill !== "none";
+      const hasStroke = s.stroke && s.stroke !== "none";
+      stylePanel.append(section("Hình dạng",
+        row("Màu nền", h("div", { class: "size-row" },
+          mkColor(s.fill, (v) => applyStyle({ fill: v }, "fill", notLine), "Màu nền"),
+          optBtn("Không", !hasFill, () => applyStyle({ fill: "none" }, null, notLine), { title: "Không tô nền" }))),
+        row("Viền", h("div", { class: "size-row" },
+          mkColor(s.stroke, (v) => applyStyle({ stroke: v }, "stroke", notLine), "Màu viền"),
+          mkNum(s.strokeWidth ?? 1.5, 0, 64, 0.5, (v) => applyStyle({ strokeWidth: v }, null, notLine), { "aria-label": "Độ dày viền" }),
+          optBtn("Không", !hasStroke, () => applyStyle({ stroke: "none" }, null, notLine), { title: "Không viền" }))),
+        row("Kiểu nét viền", optGroup(
+          ...[["solid", "Liền"], ["dashed", "Đứt"], ["dotted", "Chấm"]].map(([val, lab]) =>
+            optBtn(lab, lt === val, () => applyStyle({ lineType: val, strokeDasharray: val === "dashed" ? "8 6" : val === "dotted" ? "2 4" : "" }, null, notLine)))
+        )),
+        isRect ? row("Bo góc", mkNum(s.radius ?? 0, 0, 512, 1, (v) => applyStyle({ radius: v }, null, (e) => ["rectangle", "rounded-rectangle", "note", "frame", "text"].includes(e.type)))) : null,
+      ));
     }
 
-    // layer actions
-    const layerRow = document.createElement("div");
-    layerRow.className = "style-row";
-    const labL = document.createElement("label");
-    labL.textContent = "Lớp (z-order)";
-    layerRow.appendChild(labL);
-    const btns = document.createElement("div");
-    btns.className = "style-opts";
-    const mk = (label, fn) => {
-      const b = document.createElement("button");
-      b.className = "style-opt";
-      b.textContent = label;
-      b.addEventListener("click", fn);
-      return b;
-    };
-    btns.append(
-      mk("Lên trên", () => { for (const id of selection) doc.zTop(id); history.snapshot("z"); renderAll(); }),
-      mk("Xuống dưới", () => { for (const id of selection) doc.zBottom(id); history.snapshot("z"); renderAll(); }),
-    );
-    layerRow.appendChild(btns);
-    stylePanel.appendChild(layerRow);
+    /* ---------- Đường / mũi tên ---------- */
+    if (refLine) {
+      const s = refLine.style || {};
+      const isL = isLineType;
+      const lt = s.lineType || (s.strokeDasharray ? "dashed" : "solid");
+      stylePanel.append(section("Đường & mũi tên",
+        row("Màu đường", mkColor(s.stroke, (v) => applyStyle({ stroke: v }, "stroke", isL), "Màu đường")),
+        row("Độ dày", mkNum(s.strokeWidth ?? 2, 0, 64, 0.5, (v) => applyStyle({ strokeWidth: v }, null, isL))),
+        row("Kiểu nét", optGroup(
+          ...[["solid", "Liền"], ["dashed", "Đứt"], ["dotted", "Chấm"]].map(([val, lab]) =>
+            optBtn(lab, lt === val, () => applyStyle({ lineType: val, strokeDasharray: val === "dashed" ? "8 6" : val === "dotted" ? "2 4" : "" }, null, isL)))
+        )),
+        ...[["arrowStart", "Mũi tên đầu"], ["arrowEnd", "Mũi tên cuối"]].map(([field, lab]) =>
+          row(lab, optGroup(
+            ...[["none", "Không"], ["arrow", "Mở"], ["triangle", "Đầy"]].map(([val, lab2]) =>
+              optBtn(lab2, (s[field] || "none") === val, () => applyStyle({ [field]: val }, null, isL)))
+          ))),
+      ));
+    }
+
+    /* ---------- Chung ---------- */
+    const s0 = e0.style || {};
+    stylePanel.append(section("Chung",
+      row("Độ mờ", mkNum(s0.opacity ?? 1, 0, 1, 0.05, (v) => applyStyle({ opacity: v }, "opacity"))),
+      row("Lớp (z-order)", optGroup(
+        optBtn("Lên trên", false, () => { for (const id of selection) doc.zTop(id); history.snapshot("z"); renderAll(); }),
+        optBtn("Xuống dưới", false, () => { for (const id of selection) doc.zBottom(id); history.snapshot("z"); renderAll(); }),
+      )),
+    ));
   }
 
   function typeLabel(type) {
@@ -1067,14 +1462,6 @@
     return labels[type] || type;
   }
 
-  function normalizeColor(c) {
-    if (!c) return null;
-    // CSS ten mau → hex de hien color picker
-    const named = { "#eef2ff": "#eef2ff" };
-    if (/^#[0-9a-fA-F]{6}$/.test(c)) return c;
-    return "#eef2ff" in named ? c : null;
-  }
-
   /* ============ context menu ============ */
 
   host.addEventListener("contextmenu", (e) => {
@@ -1082,7 +1469,6 @@
     const world = view.screenToWorld(e.clientX, e.clientY);
     const hit = hitElement(world);
     if (hit && !selection.has(hit.id)) selection = new Set([hit.id]);
-    if (!hit && selection.size > 0) { /* giu selection */ }
     renderAll();
 
     const menu = document.createElement("div");
@@ -1099,6 +1485,7 @@
       b.addEventListener("click", () => { menu.remove(); fn(); });
       return b;
     };
+    const sep = () => { const d = document.createElement("div"); d.className = "ctx-sep"; return d; };
 
     if (selection.size > 0) {
       const title = document.createElement("div");
@@ -1108,7 +1495,16 @@
       menu.appendChild(mkItem("Sao chép", copySelection, "", "copy"));
       menu.appendChild(mkItem("Tạo bản sao", duplicateSelection, "", "copy"));
       menu.appendChild(mkItem("Xóa", deleteSelection, "danger", "trash"));
-      menu.appendChild(document.createElement("div")).className = "ctx-sep";
+      menu.appendChild(sep());
+      if (selected().some(isTextEl)) {
+        menu.appendChild(mkItem("Sửa chữ (Enter)", () => { const t = selected().find(isTextEl); if (t) editTextElement(t); }));
+      }
+      if (selected().some(isRotatable)) {
+        menu.appendChild(mkItem("Xoay phải 90°", () => rotateSelectionBy(90)));
+        menu.appendChild(mkItem("Xoay trái 90°", () => rotateSelectionBy(-90)));
+        if (selected().some((x) => !isLineType(x.type) && x.rotation)) menu.appendChild(mkItem("Đặt lại góc xoay", () => setRotationAbs(0)));
+        menu.appendChild(sep());
+      }
       menu.appendChild(mkItem("Đưa lên trên", () => { for (const id of selection) doc.zTop(id); history.snapshot("z"); renderAll(); }));
       menu.appendChild(mkItem("Đưa xuống dưới", () => { for (const id of selection) doc.zBottom(id); history.snapshot("z"); renderAll(); }));
     } else {
@@ -1118,6 +1514,10 @@
     menu.style.left = `${e.clientX}px`;
     menu.style.top = `${e.clientY}px`;
     document.body.appendChild(menu);
+    // Giữ menu trong màn hình
+    const mr = menu.getBoundingClientRect();
+    if (mr.right > window.innerWidth) menu.style.left = `${Math.max(4, window.innerWidth - mr.width - 8)}px`;
+    if (mr.bottom > window.innerHeight) menu.style.top = `${Math.max(4, window.innerHeight - mr.height - 8)}px`;
     const close = (ev) => {
       if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener("pointerdown", close, true); }
     };
@@ -1137,10 +1537,19 @@
   function saveDraft() {
     try {
       localStorage.setItem(DRAFT_KEY, JSON.stringify({ name: nameInput.value, data: doc.serialize(), t: Date.now() }));
-    } catch { /* full quota — bo qua */ }
+    } catch { /* full quota — bỏ qua */ }
   }
   setInterval(() => { if (dirty) saveDraft(); }, 8000);
   window.addEventListener("beforeunload", () => { if (dirty) saveDraft(); });
+
+  /* ============ phông tải xong → đo lại chữ ============ */
+
+  FontCatalog.onChange(() => {
+    doc.refit();
+    if (activeEditor) activeEditor.place();
+    requestRender(false);
+  });
+  window.addEventListener("resize", () => { if (activeEditor) activeEditor.place(); });
 
   /* ============ init render ============ */
 
@@ -1158,4 +1567,7 @@
   }
   document.getElementById("zoomLabel").textContent = Math.round(view.zoom * 100) + "%";
   renderAll();
+
+  // Chỉ ở chế độ development: móc gỡ lỗi / kiểm thử tự động
+  if (window.__DIAGRAM__.IS_DEV) window.__EDITOR_DEBUG__ = { doc, history, view, selected, get selection() { return selection; }, setSelection(ids) { selection = new Set(ids); renderAll(); }, renderAll };
 })();
