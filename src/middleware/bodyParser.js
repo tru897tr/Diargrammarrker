@@ -12,39 +12,8 @@ const log = createLogger('body');
  * - Method khong hop le → 405 + Allow (chi cho GET → POST/PUT/PATCH/DELETE tra 405).
  */
 
-/**
- * Route nhận body lớn (tệp sao lưu của admin). Parser mặc định BỎ QUA route này;
- * route tự gắn `largeJsonBodyParser` SAU khi đã xác thực admin, để người chưa đăng nhập
- * không thể bắt server đọc hàng chục MB vào RAM.
- */
-const LARGE_BODY_PATHS = new Set(['/api/v1/admin/import']);
-
-function isLargeBodyRoute(req) {
-  const path = String(req.originalUrl || req.url || '').split('?')[0].replace(/\/+$/, '');
-  return LARGE_BODY_PATHS.has(path);
-}
-
-function formatLimit(bytes) {
-  return bytes >= 1024 * 1024 ? `${Math.floor(bytes / 1024 / 1024)}MB` : `${Math.floor(bytes / 1024)}KB`;
-}
-
-/** Parser JSON mặc định cho toàn bộ API (giới hạn nhỏ). */
-export function jsonBodyParser(req, res, next) {
-  if (isLargeBodyRoute(req)) return next();
-  return parseJsonBody(config.limits.jsonBodyBytes)(req, res, next);
-}
-
-/** Parser JSON cho route nhận tệp lớn (giới hạn config.limits.importBodyBytes). */
-export function largeJsonBodyParser(req, res, next) {
-  return parseJsonBody(config.limits.importBodyBytes)(req, res, next);
-}
-
 /** Raw JSON parser co gioi han size va bao loi than thien. */
-function parseJsonBody(limit) {
-  return (req, res, next) => handleJsonBody(req, res, next, limit);
-}
-
-function handleJsonBody(req, res, next, limit) {
+export function jsonBodyParser(req, res, next) {
   const method = req.method.toUpperCase();
   if (!['POST', 'PATCH', 'PUT', 'DELETE'].includes(method)) return next();
 
@@ -61,9 +30,12 @@ function handleJsonBody(req, res, next, limit) {
     return next();
   }
 
+  // Sơ đồ có thể chứa ảnh/GIF (data URI) nên endpoint này được phép lớn hơn.
+  const isDiagramApi = /^\/api\/v1\/diagrams(\/|$|\?)/.test(req.originalUrl || req.url || '');
+  const limit = isDiagramApi ? config.limits.diagramBodyBytes : config.limits.jsonBodyBytes;
   const len = parseInt(req.get('content-length') || '0', 10);
   if (len > limit) {
-    return fail(res, 'BODY_TOO_LARGE', `Body quá lớn (tối đa ${formatLimit(limit)}).`, 413);
+    return fail(res, 'BODY_TOO_LARGE', `Body quá lớn (tối đa ${limit >= 1048576 ? Math.floor(limit / 1048576) + 'MB' : Math.floor(limit / 1024) + 'KB'}).`, 413);
   }
 
   let size = 0;
@@ -77,7 +49,7 @@ function handleJsonBody(req, res, next, limit) {
       rejected = true;
       chunks.length = 0;
       res.setHeader('Connection', 'close');
-      fail(res, 'BODY_TOO_LARGE', `Body quá lớn (tối đa ${formatLimit(limit)}).`, 413);
+      fail(res, 'BODY_TOO_LARGE', 'Body quá lớn.', 413);
       res.on('finish', () => req.destroy());
       return;
     }

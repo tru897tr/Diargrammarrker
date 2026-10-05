@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { config } from './config.js';
+import { getEmbedHosts } from '../shared/embedHosts.js';
 
 const VIEWS_DIR = path.join(config.rootDir, 'views');
 
@@ -40,6 +41,7 @@ export async function renderView(res, viewFile, { title, user = null, session = 
     csrfToken: user && session ? session.csrfToken : undefined,
     appUrl: config.appUrl,
     dev: config.isDevelopment,
+    embedHosts: getEmbedHosts(),
     ...extra,
   };
   const values = { title: esc(title), boot: safeJson(boot), theme: '' };

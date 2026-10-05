@@ -1,49 +1,51 @@
 # Danh sách thay đổi
 
-## Bản cập nhật: sửa lỗi canvas + định dạng chữ/xoay + sao lưu dữ liệu
+## Bản nâng cấp: trình soạn thảo, media, trình chiếu
 
-### Lỗi đã sửa (trình soạn thảo)
-| Lỗi | Nguyên nhân | File |
+### Đã làm theo yêu cầu
+| Yêu cầu | Cách làm | File chính |
 |---|---|---|
-| `NotFoundError: Failed to execute 'insertBefore'` tại `CanvasView.buildGrid` → **không mở được trang `/create`** | `buildGrid()` chạy khi `scene` chưa là con của `<svg>`. Nay dựng DOM đúng thứ tự: `defs` → lưới → `scene` | `public/js/editor-canvas.js` |
-| Undo chậm một bước (lần Ctrl+Z đầu không có tác dụng), undo còn kéo viewport về chỗ cũ | History lưu trạng thái *sau* thao tác và không có trạng thái gốc | `editor-canvas.js` |
-| Dòng chữ đầu tiên bị đẩy xuống thêm một dòng | `dy` của `tspan` luôn bằng một dòng | `editor-canvas.js` |
-| Nhân bản/dán đường thẳng không dịch vị trí | Chỉ cộng vào `x, y`, không cộng vào `points` | `public/js/editor.js` |
-| Gõ số trong panel (vd cỡ chữ "24") mất focus sau ký tự đầu; bảng chọn màu đóng ngay | Panel bị dựng lại sau mỗi lần `input` | `editor.js` |
-| Kéo bảng chọn màu tạo hàng chục bước undo | Mỗi sự kiện `input` là một snapshot | `editor-canvas.js` (gộp bước) |
-| Phím mũi tên không di chuyển được đường thẳng | Chỉ đổi `x, y` | `editor.js` |
-| Lưu sơ đồ bị từ chối khi dùng phông/thuộc tính mới | Schema zod chỉ cho `sans/serif/mono` | `src/validation/schema.js` |
+| Trang chủ khi đã đăng nhập có giao diện giới thiệu khác | Server chọn view theo phiên: khách → landing, đã đăng nhập → trang làm việc (chào theo giờ, bắt đầu nhanh, sơ đồ gần đây, tính năng mới) | `pageRoutes.js`, `views/home-user.html`, `home-user.js` |
+| SVG sai / không chạy / không phù hợp | Viết lại engine: đo chữ thật bằng canvas và ngắt dòng đúng, vùng chữ theo từng hình, 20 hình khối (đường path chuẩn), xoay mọi phần tử, đổi cỡ đúng cả khi đã xoay, màu có độ trong suốt (`fill-opacity`), đổ bóng, hit-test đúng với hình rỗng/xoay | `public/js/editor-canvas.js` |
+| Nút hoàn tác / làm lại là mũi tên | Hai nút mũi tên cong ở thanh trên trình soạn thảo (tự tắt khi không còn bước), cùng Ctrl+Z / Ctrl+Shift+Z. Sửa lỗi gốc: lịch sử trước đây lưu trạng thái **sau** thao tác nên hoàn tác không có tác dụng; kéo thanh màu/gõ số được gộp thành một bước | `editor-canvas.js` (`History`), `icons.js`, `editor.js` |
+| Làm lại các giao diện xấu / sai | Danh sách sơ đồ thành lưới thẻ có ảnh xem trước, tìm kiếm, sắp xếp, đổi tên/nhân bản/xóa tại chỗ (không tải lại trang); trình soạn thảo mới; font Be Vietnam Pro tự host | `list.js`, `pages.css`, `editor.css`, `public/fonts/` |
+| Bảng màu riêng, nhập mã màu đầy đủ | Bảng chọn màu tự viết: vùng chọn đậm/sáng, thanh sắc độ + độ trong suốt, nhập HEX 3/4/6/8 số (có hoặc không có `#`), `rgb()`, `hsl()`, tên màu CSS, ô R G B A / H S L, ống nhỏ giọt, "Không màu", màu đang dùng trong sơ đồ, màu gần đây, bàn phím và đọc màn hình | `public/js/colorpicker.js` |
+| Nút Trình chiếu ở trang chia sẻ và trang xem | Toàn màn hình (Fullscreen API, tự chuyển sang chế độ CSS nếu trình duyệt không hỗ trợ), vẫn thu phóng bằng chuột/cảm ứng/phím, kéo di chuyển, bấm vào video/nhúng để tương tác, thanh điều khiển tự ẩn. Có cả ở trình soạn thảo (phím P) | `present.js`, `share-view.js`, `views/share/view.html` |
+| Menu kiểu PowerPoint | Ribbon 4 tab: **Trang chủ · Chèn · Sắp xếp · Xem**; Chèn tách riêng *Hình khối* (thư viện nhóm), *Đường & nối*, *Văn bản*, *Phương tiện* | `editor.js` (`TABS`) |
+| Chèn ảnh, GIF, video, liên kết nhúng | Xem bên dưới | `media.js`, `schema.js`, `embedHosts.js` |
 
-### Tính năng mới: định dạng chữ & xoay (giống PowerPoint)
-- **Phông chữ**: 16 phông có sẵn trên máy + 29 Google Fonts hỗ trợ tiếng Việt (tải khi dùng, có phông dự phòng khi offline) + nhập tên phông bất kỳ.
-- **Cỡ chữ**: ô nhập + danh sách cỡ chuẩn, nút `A−`/`A+` (nhảy theo bậc 8, 9, 10, 11, 12, 14, 16…), `Ctrl+Shift+<` / `>`, `Ctrl+[` / `]` (±1 điểm).
-- **Phóng to/thu nhỏ chữ**: kéo góc của khung *Text* để scale chữ theo tỉ lệ; kéo cạnh để đặt bề rộng (tự xuống dòng).
-- **Vừa với khung**: Không / *Thu chữ khi tràn* / *Giãn khung theo chữ*.
-- **Kiểu chữ**: đậm, nghiêng, gạch chân, gạch ngang (`Ctrl+B/I/U`), màu chữ, căn ngang & dọc, giãn dòng, giãn chữ, IN HOA/thường/Viết Hoa.
-- **Xoay khung**: núm tròn phía trên (giữ `Shift` = bước 15°), ô nhập góc, nút ±15° / ±90°; chọn nhiều phần tử → xoay cả nhóm quanh tâm chung. Đổi cỡ khung đã xoay giữ nguyên góc đối diện. Connector bám đúng điểm neo của hình đã xoay.
-- **Xoay chữ trong khung** (độc lập với khung): góc bất kỳ hoặc ↺/↻ 90°.
-- Vị trí/kích thước X, Y, Rộng, Cao; kiểu nét viền (liền/đứt/chấm); nhấp đúp hoặc `Enter`/`F2` để sửa chữ ngay trên canvas (ô nhập khớp phông, cỡ, màu và góc xoay).
-- Các nhóm trong panel thu gọn được. Trang chia sẻ dùng cùng engine nên hiển thị đúng phông/góc xoay; dữ liệu cũ vẫn mở bình thường.
+### Ảnh, GIF, video, nhúng
+- **Ảnh/GIF**: tải lên (kéo thả, dán Ctrl+V, hoặc nút Chèn) hoặc dán liên kết. Ảnh tĩnh tự thu nhỏ ≤1920px và nén; **GIF/WebP/APNG động được giữ nguyên** để vẫn chuyển động. Có tỉ lệ khóa, đổi cỡ, xoay.
+- **Video**: dán liên kết `.mp4/.webm` (có nút điều khiển, lặp, tắt tiếng, tự phát khi xem) hoặc liên kết YouTube/Vimeo… (tự thành trình phát).
+- **Nhúng**: dán nguyên mã `<iframe>` (kể cả đoạn Canva có `padding-top: 58.8%` — tỉ lệ khung được đọc đúng) hoặc chỉ liên kết. Tự nhận diện YouTube (watch, youtu.be, shorts, playlist, mốc thời gian), Vimeo, Canva, Google Slides/Docs/Sheets/Drive/Forms/Maps, Figma, Spotify, SoundCloud, Loom, TikTok, Twitch, Dailymotion, Streamable. Kéo đi bất kỳ đâu, xoay, đổi cỡ tự do; nhấp đúp để bấm vào trình phát, Esc để thoát.
+- Video/nhúng là phần tử HTML nằm **dưới** lớp vẽ SVG: bạn có thể vẽ mũi tên, chữ, hình đè lên trình phát; ảnh (SVG) và hình vẽ luôn nằm trên video/nhúng bất kể thứ tự lớp.
 
-### Tính năng mới: sao lưu & khôi phục (trang Quản lý trang web)
-- **Xuất**: tải một tệp JSON gồm tài khoản (kèm mã băm mật khẩu), sơ đồ, liên kết chia sẻ; chọn từng loại; có checksum SHA-256.
-- **Nhập**: kiểm tra toàn bộ tệp → hộp xem trước (thêm/cập nhật/bỏ qua bao nhiêu) → xác nhận mới ghi.
-  - *Gộp*: không xóa gì; tài khoản trùng email được gộp (sơ đồ chuyển về tài khoản đó); trùng tên đăng nhập tự đổi tên; tài khoản đang đăng nhập không bao giờ bị ghi đè.
-  - *Thay thế*: thay các mục được chọn; chặn nếu kết quả không còn admin nào hoạt động; cảnh báo nếu bạn sẽ bị đăng xuất.
-- Phiên đăng nhập không được sao lưu. Chỉ admin dùng được (backend kiểm tra), giới hạn tốc độ, giới hạn kích thước tệp nhập (mặc định 30 MB, đổi bằng `IMPORT_MAX_MB`) và chỉ được đọc *sau khi* xác thực admin.
-- CSP: cho phép đúng `fonts.googleapis.com` (CSS) và `fonts.gstatic.com` (tệp phông), không mở script/kết nối ngoài.
+### Bảo mật
+- Chỉ nhúng được tên miền trong danh sách cho phép (`src/shared/embedHosts.js`, mở rộng bằng `EMBED_EXTRA_HOSTS`); cùng một danh sách dùng cho CSP `frame-src`, kiểm tra dữ liệu khi lưu và kiểm tra ở trình duyệt. Chỉ `https`.
+- Iframe nhúng có `sandbox` + `referrerpolicy`; ảnh chỉ nhận `https:` hoặc `data:image/*` (không `javascript:`); video chỉ `https:`.
+- Màu được kiểm tra bằng regex (hex/rgb/hsl/tên); mọi chữ người dùng chỉ vào DOM bằng `textContent`.
+- Giới hạn: 4M ký tự/ảnh tải lên, 9MB ảnh tải lên/sơ đồ; body riêng cho `/api/v1/diagrams` (mặc định 12MB, `DIAGRAM_BODY_MB`), các endpoint khác giữ 512KB.
 
-### Chạy test
-```bash
-npm install
-npm test            # gồm tests/backup.test.js (13 ca)
-```
+### Lỗi sẵn có đã sửa thêm
+| Lỗi | Nguyên nhân |
+|---|---|
+| Hoàn tác không có tác dụng | `History` lưu ảnh chụp **sau** thao tác rồi khôi phục chính nó |
+| Nhấp đúp vào hình không mở được ô gõ chữ | Mỗi lần vẽ lại, node SVG bị gỡ rồi gắn lại nên trình duyệt mất chuỗi nhấp đúp. Nay đồng bộ DOM tại chỗ + nhận nhấp đúp bằng con trỏ |
+| Chữ nhiều dòng trong hình bị lệch | `dy` được tính cho mọi dòng như dòng đầu |
+| Hộp thoại không nhận focus (ô nhập, nút mặc định) | `focus()` gọi khi hộp thoại còn `visibility:hidden` |
+| Đường nối bị xóa nếu thả ra khoảng trống | Nay giữ lại đầu tự do; đầu gắn vào hình bám theo khi hình di chuyển |
+| Lưu sơ đồ mới xong tải lại cả trang | Nay giữ nguyên phiên làm việc, chỉ đổi URL |
+| Bản nháp tự lưu nhưng không bao giờ được khôi phục | Nay hỏi khôi phục khi mở lại |
+| Chữ tự do màu tối không đọc được ở giao diện tối | Màu chữ mặc định là `auto`, đổi theo giao diện |
+
+### Kiểm thử
+`npm test` — 20 test (danh sách nhúng, schema, xem trước, API lưu/đọc, CSP, trang chủ theo trạng thái đăng nhập). Ngoài ra đã kiểm thử tay bằng Chromium headless: vẽ, nối, xoay, đổi cỡ, bảng màu, GIF, nhúng Canva/YouTube, lưu/tải lại, chia sẻ, trình chiếu.
 
 ---
 
 ## Bản sửa lỗi trước đó
 
-## Lỗi đã sửa
+### Lỗi đã sửa
 | Lỗi | Nguyên nhân | File |
 |---|---|---|
 | Ô đăng nhập/đăng ký, toast, popup không chạy | `window.__DIAGRAM__` chỉ gán trong `bootApp()` mà không ai gọi → mọi script trang bị lỗi | `public/js/core.js` |

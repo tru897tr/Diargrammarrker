@@ -4,49 +4,66 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>{{title}}</title>
-  <meta name="description" content="Editor sơ đồ Diagram — infinite canvas.">
+  <meta name="description" content="Trình soạn thảo sơ đồ Diagram — canvas vô hạn.">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/css/fonts.css">
   <link rel="stylesheet" href="/css/base.css">
   <link rel="stylesheet" href="/css/pages.css">
   <link rel="stylesheet" href="/css/editor.css">
 </head>
-<body>
+<body class="editor-page">
   <script id="boot-data" type="application/json">{{boot}}</script>
 
-  <div class="editor-root">
-    <div class="editor-topbar">
-      <button class="hamburger" id="menuBtn" aria-label="Mở menu"></button>
+  <div class="editor-root" id="editorRoot">
+    <header class="editor-topbar">
+      <button class="tb-btn" id="menuBtn" aria-label="Mở menu" data-tip="Menu"></button>
       <input class="diagram-name-input" id="diagramName" placeholder="Sơ đồ chưa đặt tên" maxlength="120" aria-label="Tên sơ đồ">
-      <span class="save-state" id="saveState"></span>
-      <div class="topbar-right">
-        <button class="btn btn-secondary btn-sm panel-toggle" id="panelToggle" aria-label="Mở bảng kiểu"></button>
-        <button class="btn btn-primary btn-sm" id="saveBtn">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
-          Lưu
-        </button>
+      <span class="save-state" id="saveState" role="status" aria-live="polite"></span>
+
+      <div class="tb-group" role="group" aria-label="Hoàn tác và làm lại">
+        <button class="tb-btn" id="undoBtn" aria-label="Hoàn tác (Ctrl+Z)" data-tip="Hoàn tác (Ctrl+Z)" disabled></button>
+        <button class="tb-btn" id="redoBtn" aria-label="Làm lại (Ctrl+Shift+Z)" data-tip="Làm lại (Ctrl+Shift+Z)" disabled></button>
       </div>
-    </div>
+
+      <div class="topbar-right">
+        <button class="btn btn-secondary btn-sm" id="presentBtn" type="button"></button>
+        <button class="tb-btn panel-toggle" id="panelToggle" aria-label="Bảng thuộc tính" data-tip="Bảng thuộc tính"></button>
+        <button class="btn btn-primary btn-sm" id="saveBtn" type="button"></button>
+      </div>
+    </header>
+
+    <nav class="ribbon" id="ribbon" aria-label="Thanh công cụ">
+      <div class="ribbon-tabs" id="ribbonTabs" role="tablist"></div>
+      <div class="ribbon-body" id="ribbonBody"></div>
+    </nav>
 
     <div class="editor-body">
-      <div class="tool-rail" id="toolRail" role="toolbar" aria-label="Công cụ vẽ"></div>
-
       <div class="canvas-host" id="canvasHost">
-        <svg class="diagram-svg" id="svgRoot" xmlns="http://www.w3.org/2000/svg"></svg>
-        <div class="canvas-hud">
-          <button class="hud-btn" id="zoomOut" aria-label="Thu nhỏ"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M8 11h6M21 21l-4.3-4.3"/></svg></button>
+        <svg class="diagram-svg" id="svgRoot" xmlns="http://www.w3.org/2000/svg" role="application" aria-label="Khung vẽ sơ đồ"></svg>
+        <div class="ctx-bar hidden" id="ctxBar" role="toolbar" aria-label="Thao tác nhanh"></div>
+        <div class="canvas-hud" id="hud">
+          <button class="hud-btn" id="zoomOut" aria-label="Thu nhỏ" data-tip="Thu nhỏ (−)"></button>
           <span class="hud-zoom" id="zoomLabel">100%</span>
-          <button class="hud-btn" id="zoomIn" aria-label="Phóng to"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M11 8v6M8 11h6M21 21l-4.3-4.3"/></svg></button>
-          <button class="hud-btn" id="fitBtn" aria-label="Xem toàn bộ"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg></button>
-          <button class="hud-btn" id="resetZoom" aria-label="Đặt lại zoom"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5"/></svg></button>
+          <button class="hud-btn" id="zoomIn" aria-label="Phóng to" data-tip="Phóng to (+)"></button>
+          <button class="hud-btn" id="fitBtn" aria-label="Xem toàn bộ" data-tip="Vừa khung hình (Shift+1)"></button>
+          <button class="hud-btn" id="resetZoom" aria-label="Đặt lại 100%" data-tip="100% (Ctrl+0)"></button>
+        </div>
+        <div class="empty-hint hidden" id="emptyHint">
+          <strong>Khung vẽ đang trống</strong>
+          <span>Mở tab <b>Chèn</b> để thêm hình, ảnh, video hoặc nhúng YouTube/Canva. Kéo thả ảnh vào đây cũng được.</span>
         </div>
       </div>
 
-      <aside class="style-panel" id="stylePanel" aria-label="Panel thuoc tinh"></aside>
+      <aside class="style-panel" id="stylePanel" aria-label="Bảng thuộc tính"></aside>
     </div>
   </div>
 
   <script src="/js/core.js"></script>
+  <script src="/js/icons.js"></script>
+  <script src="/js/media.js"></script>
   <script src="/js/editor-canvas.js"></script>
+  <script src="/js/colorpicker.js"></script>
+  <script src="/js/present.js"></script>
   <script src="/js/editor.js"></script>
 </body>
 </html>

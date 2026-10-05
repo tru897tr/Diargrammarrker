@@ -1,6 +1,7 @@
 import { newId, now, iso, deepClone } from '../../server/utils.js';
 import { toPublicUser } from './models.js';
 import createLogger from '../../server/logger.js';
+import { buildPreview } from '../../shared/preview.js';
 
 const log = createLogger('memory-store');
 
@@ -17,7 +18,9 @@ const log = createLogger('memory-store');
 
 /** Loc ket qua cua diagram cho API (khong lo data lon khi list). */
 function diagramSummary(d) {
-  return { id: d.id, name: d.name, ownerId: d.ownerId, createdAt: d.createdAt, updatedAt: d.updatedAt };
+  const els = Array.isArray(d.data?.elements) ? d.data.elements.filter((e) => e.type !== 'group') : [];
+  const mediaCount = els.filter((e) => e.type === 'image' || e.type === 'video' || e.type === 'embed').length;
+  return { id: d.id, name: d.name, ownerId: d.ownerId, createdAt: d.createdAt, updatedAt: d.updatedAt, elementCount: els.length, mediaCount, preview: buildPreview(d.data?.elements) };
 }
 
 function publicDiagram(d) {
@@ -309,54 +312,6 @@ export class MemoryStore {
     let n = 0;
     for (const s of this.shares.values()) if (!s.revokedAt) n++;
     return n;
-  }
-
-  // ------------------------------------------------------- backup/restore ---
-
-  /**
-   * Chụp toàn bộ dữ liệu để sao lưu (bản sao sâu). Có passwordHash của user — CHỈ dùng cho
-   * tính năng xuất dữ liệu của admin. Không gồm session (phiên đăng nhập là tạm thời).
-   */
-  async exportAll() {
-    return {
-      users: [...this.users.values()].map((u) => ({ ...u })),
-      diagrams: [...this.diagrams.values()].map(publicDiagram),
-      shares: [...this.shares.values()].filter((s) => !s.revokedAt).map((s) => ({ ...s })),
-    };
-  }
-
-  /**
-   * Áp dụng dữ liệu đã được service kiểm tra/chuẩn hóa. Toàn bộ thân hàm chạy đồng bộ
-   * (không có await) nên không request nào chen vào giữa chừng.
-   * - replace.<mục> = true: xóa sạch mục đó trước khi ghi.
-   * - Sau khi ghi: dọn share mồ côi, dựng lại chỉ mục share, hủy session của user không còn tồn tại / bị khóa.
-   */
-  async applySnapshot({ replace = {}, users = [], diagrams = [], shares = [] } = {}) {
-    if (replace.users) this.users.clear();
-    for (const u of users) this.users.set(u.id, { ...u });
-
-    if (replace.diagrams) this.diagrams.clear();
-    for (const d of diagrams) this.diagrams.set(d.id, { ...d, data: deepClone(d.data) });
-
-    if (replace.shares) this.shares.clear();
-    for (const sh of shares) this.shares.set(sh.id, { ...sh, revokedAt: null });
-
-    // Dọn dẹp + dựng lại chỉ mục
-    this.sharesByToken.clear();
-    this.sharesByDiagram.clear();
-    for (const [id, sh] of [...this.shares]) {
-      if (sh.revokedAt || !this.diagrams.has(sh.diagramId)) { this.shares.delete(id); continue; }
-      this.sharesByToken.set(sh.token, id);
-      this.sharesByDiagram.set(sh.diagramId, id);
-    }
-    for (const [id, session] of [...this.sessions]) {
-      const owner = this.users.get(session.userId);
-      if (!owner || owner.status !== 'active') this.sessions.delete(id);
-    }
-    // Chưa có admin nào → người đăng ký kế tiếp sẽ thành admin (giống lúc mới khởi động).
-    this._hasAdmin = [...this.users.values()].some((u) => u.role === 'admin');
-    log.info('snapshot applied', { users: this.users.size, diagrams: this.diagrams.size, shares: this.shares.size });
-    return { users: this.users.size, diagrams: this.diagrams.size, shares: this.shares.size };
   }
 }
 

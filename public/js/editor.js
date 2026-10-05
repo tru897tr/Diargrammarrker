@@ -1,1573 +1,1840 @@
-/* Editor page: tools, selection, editing, save, dirty guard */
+/* Trình soạn thảo sơ đồ: công cụ, chọn/di chuyển/đổi cỡ/xoay, chữ, chèn ảnh-video-nhúng,
+ * ribbon kiểu PowerPoint, bảng thuộc tính, hoàn tác/làm lại, lưu, trình chiếu. */
+(function () {
 "use strict";
 
-(async function () {
-  const { Api, Toast, UI, Theme, SideMenu, ICONS, user, BOOT } = window.__DIAGRAM__;
-  const {
-    DiagramDoc, History, CanvasView, Render, Layout, Geometry, Transform, FontCatalog,
-    anchorPoint, nearestSide, updateConnectorPoints,
-    el, uid, snap, clamp, normAngle, rotPoint, round2, isLineType, stepFontSize,
-    GRID, DEFAULT_STYLES, FONT_SIZE_PRESETS, MIN_FONT, MAX_FONT, TEXT_TYPES,
-  } = window.__DIAGRAM_ENGINE__;
-  const DEG = Math.PI / 180;
+const { Api, Toast, UI, Theme, SideMenu, ICONS, user, BOOT } = window.__DIAGRAM__;
+const E = window.__DIAGRAM_ENGINE__;
+const {
+  DiagramDoc, History, CanvasView, Color, SHAPES, SHAPE_GROUPS, DEFAULT_STYLES, GRID, MEDIA_TYPES,
+  el, uid, snap, clamp, round, rad, rotatePoint, elementBox, elementCenter, elementCorners, worldBBox, boundsOf,
+  hitTest, anchorPoint, nearestSide, isPointType, fitText, textBoxOf, lineHeightOf, TextMeasure, wrapText, routePoints,
+} = E;
+const M = window.__DIAGRAM_MEDIA__;
+const CP = window.__DIAGRAM_COLORPICKER__;
+const PR = window.__DIAGRAM_PRESENT__;
 
-  const isEdit = BOOT.mode === "edit" && BOOT.diagram;
-  const diagramId = isEdit ? BOOT.diagram.id : null;
-  const savedData = isEdit ? BOOT.diagram.data : null;
+Theme.init();
 
-  const prefs = (() => {
-    try { return JSON.parse(localStorage.getItem("diagram-prefs")) || {}; } catch { return {}; }
-  })();
-  const confirmDelete = prefs.confirmBeforeDelete !== false;
+/* ============ trạng thái ============ */
 
-  const doc = new DiagramDoc(savedData);
-  const history = new History(doc, () => markDirty());
-  const host = document.getElementById("canvasHost");
-  const svg = document.getElementById("svgRoot");
-  const view = new CanvasView(host, svg, doc, {
-    gridVisible: prefs.gridVisible !== false,
-    snapEnabled: prefs.snapEnabled !== false,
-    onZoom: (z) => {
-      document.getElementById("zoomLabel").textContent = Math.round(z * 100) + "%";
+let diagramId = BOOT.mode === "edit" && BOOT.diagram ? BOOT.diagram.id : null;
+const savedData = BOOT.mode === "edit" && BOOT.diagram ? BOOT.diagram.data : null;
+const embedHosts = BOOT.embedHosts || [];
+
+const prefs = (() => { try { return JSON.parse(localStorage.getItem("diagram-prefs")) || {}; } catch { return {}; } })();
+function savePrefs(patch) {
+  Object.assign(prefs, patch);
+  try { localStorage.setItem("diagram-prefs", JSON.stringify(prefs)); } catch { /* bỏ qua */ }
+}
+
+const $ = (id) => document.getElementById(id);
+const host = $("canvasHost");
+const svg = $("svgRoot");
+const root = $("editorRoot");
+
+const doc = new DiagramDoc(savedData);
+const history = new History(doc, (kind) => onHistoryChange(kind));
+history.markSaved();
+let ready = false;
+
+const view = new CanvasView(host, svg, doc, {
+  gridVisible: prefs.gridVisible !== false,
+  snapEnabled: prefs.snapEnabled !== false,
+  onZoom: (z) => { $("zoomLabel").textContent = Math.round(z * 100) + "%"; },
+  onViewChange: () => { if (ready) scheduleOverlay(); },
+  onPinchStart: () => cancelAction(),
+});
+
+let tool = "select";
+let toolLocked = false;
+let selection = new Set();           // id của "gốc" được chọn (phần tử đơn hoặc nhóm ngoài cùng)
+let clipboard = null;
+let nameDirty = false;
+let action = null;
+let hoverId = null;
+let editing = null;                  // { el, ta }
+let presenting = false;
+let spaceDown = false;
+let connectHot = null;               // { id, side } khi kéo đầu nối qua một hình
+let panelSig = "";
+const byId = (id) => doc.byId(id);
+
+/* ============ tiện ích ============ */
+
+const sn = (v, ev) => (view.snapEnabled && !(ev && ev.altKey) ? snap(v) : v);
+function selRoots() { return [...selection].map(byId).filter(Boolean); }
+function selLeaves() { return doc.leaves([...selection]).map(byId).filter(Boolean); }
+function selAll() { return doc.withDescendants([...selection]).map(byId).filter(Boolean); }
+function canvasCenterWorld() {
+  const r = host.getBoundingClientRect();
+  return view.screenToWorld(r.left + r.width / 2, r.top + r.height / 2);
+}
+function typeLabel(t) {
+  return ({
+    "rectangle": "Hình chữ nhật", "rounded-rectangle": "Chữ nhật bo góc", "ellipse": "Ellipse", "diamond": "Hình thoi",
+    "text": "Văn bản", "note": "Ghi chú", "frame": "Khung", "line": "Đường thẳng", "arrow": "Mũi tên", "connector": "Đường nối",
+    "group": "Nhóm", "image": "Hình ảnh", "video": "Video", "embed": "Nội dung nhúng",
+  })[t] || SHAPES[t]?.label || t;
+}
+function iconFor(t) {
+  return ({ text: ICONS.text, note: ICONS.note, frame: ICONS.frame, line: ICONS.line, arrow: ICONS.arrow, connector: ICONS.connector, group: ICONS.group, image: ICONS.image, video: ICONS.video, embed: ICONS.embed, ellipse: ICONS.circle, diamond: ICONS.diamond, "rounded-rectangle": ICONS.roundRect })[t] || ICONS.rect;
+}
+function docColors() {
+  const set = new Set();
+  for (const e of doc.elements) {
+    for (const k of ["fill", "stroke", "textColor"]) {
+      const v = e.style?.[k];
+      if (v && !Color.isNone(v)) { const n = Color.normalize(v); if (n && n !== "none") set.add(n); }
+    }
+  }
+  return [...set];
+}
+
+/* ============ lịch sử, "chưa lưu", cập nhật giao diện ============ */
+
+const saveStateEl = $("saveState");
+const undoBtn = $("undoBtn"), redoBtn = $("redoBtn");
+
+function isDirty() { return !history.isAtSaved || nameDirty; }
+function updateSaveState() {
+  const d = isDirty();
+  saveStateEl.textContent = d ? "Thay đổi chưa lưu" : (diagramId ? "Đã lưu" : "");
+  saveStateEl.classList.toggle("dirty", d);
+}
+function onHistoryChange(kind) {
+  if (!ready) return;
+  updateSaveState();
+  updateHistoryButtons();
+  if (kind === "restore") {
+    view.invalidate();
+    // bỏ khỏi vùng chọn những phần tử không còn tồn tại
+    for (const id of [...selection]) if (!byId(id)) selection.delete(id);
+    closeEditor(false);
+    redraw(true);
+  }
+}
+function updateHistoryButtons() {
+  undoBtn.disabled = !history.canUndo;
+  redoBtn.disabled = !history.canRedo;
+}
+function commit(label, key) { return history.commit(label, key); }
+function doUndo() {
+  if (presenting) return;
+  closeEditor(true);
+  if (action) { cancelAction(); return; }
+  if (history.undo()) Toast.show("Đã hoàn tác", "info", 1200);
+}
+function doRedo() {
+  if (presenting) return;
+  closeEditor(true);
+  if (history.redo()) Toast.show("Đã làm lại", "info", 1200);
+}
+/** Khôi phục tài liệu về trạng thái hiện tại của lịch sử (hủy thao tác kéo dở). */
+function revertToHistory() {
+  const keep = { ...doc.viewport };
+  doc.replaceFrom(JSON.parse(history.states[history.index].data));
+  doc.viewport = keep;
+  view.invalidate();
+  for (const id of [...selection]) if (!byId(id)) selection.delete(id);
+}
+window.addEventListener("beforeunload", (e) => { if (isDirty()) { e.preventDefault(); e.returnValue = ""; } });
+
+/* ============ vẽ lại ============ */
+
+let rafOverlay = 0, rafFull = 0;
+function scheduleOverlay() {
+  if (rafOverlay) return;
+  rafOverlay = requestAnimationFrame(() => { rafOverlay = 0; renderOverlay(); positionCtxBar(); });
+}
+/** Vẽ lại nội dung + lớp phủ (gộp nhiều lần gọi trong một khung hình). */
+function redraw(forcePanel = false) {
+  if (forcePanel) panelSig = "";
+  if (rafFull) return;
+  rafFull = requestAnimationFrame(() => { rafFull = 0; redrawNow(); });
+}
+function redrawNow() {
+  if (rafFull) { cancelAnimationFrame(rafFull); rafFull = 0; }
+  view.renderContent((node, e) => {
+    node.classList.toggle("is-editing", !!editing && editing.el.id === e.id);
+    node.style.cursor = "";
+  });
+  $("emptyHint").classList.toggle("hidden", doc.elements.length > 0 || presenting || tool !== "select");
+  renderOverlay();
+  positionCtxBar();
+  syncPanel();
+  refreshRibbon();
+}
+
+/* ============ lớp phủ chọn (khung, tay nắm, điểm nối) ============ */
+
+function outlinePath(e) {
+  const c = elementCorners(e);
+  return `M${c[0][0]} ${c[0][1]}L${c[1][0]} ${c[1][1]}L${c[2][0]} ${c[2][1]}L${c[3][0]} ${c[3][1]}Z`;
+}
+function cursorForHandle(name, rot) {
+  const base = { n: 0, ne: 45, e: 90, se: 135, s: 180, sw: 225, w: 270, nw: 315 }[name];
+  const a = (((base + (rot || 0)) % 180) + 180) % 180;
+  const idx = Math.round(a / 45) % 4;
+  return ["ns-resize", "nesw-resize", "ew-resize", "nwse-resize"][idx];
+}
+const HANDLES = [["nw", 0, 0], ["n", .5, 0], ["ne", 1, 0], ["e", 1, .5], ["se", 1, 1], ["s", .5, 1], ["sw", 0, 1], ["w", 0, .5]];
+
+function addHandle(parent, x, y, size, dataset, cursor, shape = "rect") {
+  const hit = el(shape === "rect" ? "rect" : "circle", shape === "rect"
+    ? { x: x - size, y: y - size, width: size * 2, height: size * 2, fill: "transparent" }
+    : { cx: x, cy: y, r: size * 1.1, fill: "transparent" });
+  const vis = el(shape === "rect" ? "rect" : "circle", shape === "rect"
+    ? { x: x - size / 2, y: y - size / 2, width: size, height: size, rx: size * 0.18, class: "h-handle" }
+    : { cx: x, cy: y, r: size / 2, class: "h-handle" });
+  vis.style.pointerEvents = "none";
+  for (const n of [hit]) { for (const [k, v] of Object.entries(dataset)) n.dataset[k] = v; n.style.cursor = cursor; }
+  parent.append(hit, vis);
+}
+
+function renderOverlay() {
+  const ov = view.overlay;
+  ov.replaceChildren();
+  if (presenting) return;
+  const z = view.zoom;
+  const hs = 9 / z;
+
+  // viền khi rê chuột
+  if (hoverId && !action && !selection.has(hoverId)) {
+    const h = byId(hoverId);
+    if (h && !isPointType(h.type)) ov.appendChild(el("path", { d: outlinePath(h), class: "hover-box" }));
+  }
+  // đánh dấu hình đích khi kéo đầu nối
+  if (connectHot) {
+    const t = byId(connectHot.id);
+    if (t) {
+      ov.appendChild(el("path", { d: outlinePath(t), class: "hover-box", "stroke-opacity": 1 }));
+      for (const side of ["top", "right", "bottom", "left"]) {
+        const [ax, ay] = anchorPoint(t, side);
+        ov.appendChild(el("circle", { cx: ax, cy: ay, r: 5 / z, class: "h-anchor" + (side === connectHot.side ? " hot" : "") }));
+      }
+    }
+  }
+  const roots = selRoots();
+  if (!roots.length || editing) return;
+
+  if (roots.length === 1 && roots[0].type !== "group") {
+    const e = roots[0];
+    if (isPointType(e.type)) {
+      const pts = routePoints(e);
+      const d = "M" + pts.map((p) => `${p[0]} ${p[1]}`).join("L");
+      ov.appendChild(el("path", { d, fill: "none", stroke: "var(--sel)", "stroke-opacity": 0.28, "stroke-width": (e.style?.strokeWidth || 2) + 8, "stroke-linecap": "round", "stroke-linejoin": "round", "pointer-events": "none" }));
+      const raw = e.points || [];
+      raw.forEach((p, i) => {
+        if (i !== 0 && i !== raw.length - 1) return;
+        addHandle(ov, p[0], p[1], hs * 1.1, { handle: "vertex", idx: String(i) }, "move", "circle");
+      });
+      return;
+    }
+    const b = elementBox(e);
+    const rot = e.rotation || 0;
+    const [cx, cy] = [b.x + b.w / 2, b.y + b.h / 2];
+    ov.appendChild(el("path", { d: outlinePath(e), class: "sel-box" }));
+    const lockCorners = e.lockRatio !== false && (e.type === "image");
+    const small = b.w * z < 28 || b.h * z < 28;
+    for (const [name, fx, fy] of HANDLES) {
+      if (e.type === "text") break;
+      if (name.length === 1 && (small || lockCorners)) continue;
+      const [px, py] = rotatePoint(b.x + fx * b.w, b.y + fy * b.h, cx, cy, rot);
+      addHandle(ov, px, py, hs, { handle: "resize", name }, cursorForHandle(name, rot));
+    }
+    // tay nắm xoay
+    const [tx, ty] = rotatePoint(cx, b.y, cx, cy, rot);
+    const [rx, ry] = rotatePoint(cx, b.y - 28 / z, cx, cy, rot);
+    ov.appendChild(el("line", { x1: tx, y1: ty, x2: rx, y2: ry, class: "h-line" }));
+    addHandle(ov, rx, ry, hs * 1.05, { handle: "rotate" }, "grab", "circle");
+    // điểm nối (chỉ khi dùng công cụ chọn và hình đủ lớn)
+    if (tool === "select" && e.type !== "text" && !MEDIA_TYPES.has(e.type)) {
+      for (const side of ["top", "right", "bottom", "left"]) {
+        const [ax, ay] = anchorPoint(e, side);
+        const dir = { top: [0, -1], bottom: [0, 1], left: [-1, 0], right: [1, 0] }[side];
+        const r = rad(rot), c = Math.cos(r), s = Math.sin(r);
+        const ox = (dir[0] * c - dir[1] * s) * 15 / z, oy = (dir[0] * s + dir[1] * c) * 15 / z;
+        const dot = el("circle", { cx: ax + ox, cy: ay + oy, r: 5.5 / z, class: "h-anchor" });
+        dot.dataset.handle = "anchor"; dot.dataset.side = side; dot.style.cursor = "crosshair";
+        ov.appendChild(dot);
+      }
+    }
+    return;
+  }
+
+  // nhiều phần tử / nhóm: khung bao + tay nắm tỉ lệ
+  for (const r of roots) ov.appendChild(el("path", { d: outlinePath(r), class: "sel-box multi" }));
+  const bb = boundsOf(doc.leaves([...selection]).map(byId).filter(Boolean));
+  if (!bb) return;
+  ov.appendChild(el("rect", { x: bb.minX, y: bb.minY, width: bb.w, height: bb.h, class: "sel-box" }));
+  const small = bb.w * z < 28 || bb.h * z < 28;
+  for (const [name, fx, fy] of HANDLES) {
+    if (name.length === 1 && small) continue;
+    addHandle(ov, bb.minX + fx * bb.w, bb.minY + fy * bb.h, hs, { handle: "scale", name }, cursorForHandle(name, 0));
+  }
+}
+
+/* ============ thanh thao tác nhanh nổi (video / nhúng / ảnh) ============ */
+
+const ctxBar = $("ctxBar");
+ctxBar.addEventListener("pointerdown", (e) => e.stopPropagation());
+function positionCtxBar() {
+  const roots = selRoots();
+  const e = roots.length === 1 ? roots[0] : null;
+  if (!e || !MEDIA_TYPES.has(e.type) || action || editing || presenting) { ctxBar.classList.add("hidden"); ctxBar.dataset.id = ""; return; }
+  if (ctxBar.dataset.id !== e.id + (view.media?.interactiveId === e.id ? ":i" : "")) buildCtxBar(e);
+  const bb = worldBBox(e);
+  const tl = view.worldToScreen(bb.x, bb.y), br = view.worldToScreen(bb.x + bb.w, bb.y + bb.h);
+  const hr = host.getBoundingClientRect();
+  ctxBar.classList.remove("hidden");
+  const w = ctxBar.offsetWidth, h = ctxBar.offsetHeight;
+  let x = (tl.x + br.x) / 2 - hr.left - w / 2;
+  let y = tl.y - hr.top - h - 44;            // trên tay nắm xoay
+  if (y < 8) y = br.y - hr.top + 14;         // không đủ chỗ → đặt bên dưới
+  x = clamp(x, 8, Math.max(8, hr.width - w - 8));
+  y = clamp(y, 8, Math.max(8, hr.height - h - 8));
+  ctxBar.style.left = x + "px"; ctxBar.style.top = y + "px";
+}
+function buildCtxBar(e) {
+  ctxBar.replaceChildren();
+  const interactive = view.media?.interactiveId === e.id;
+  ctxBar.dataset.id = e.id + (interactive ? ":i" : "");
+  const mk = (icon, label, fn, cls = "") => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "cb " + cls; b.innerHTML = icon;
+    const s = document.createElement("span"); s.textContent = label; b.appendChild(s);
+    b.addEventListener("click", fn);
+    ctxBar.appendChild(b);
+  };
+  if (e.type === "embed" || e.type === "video") {
+    mk(ICONS.interact, interactive ? "Thoát tương tác" : "Bấm vào trình phát", () => { view.media.setInteractive(interactive ? null : e.id); buildCtxBar(e); positionCtxBar(); }, interactive ? "on" : "");
+    mk(ICONS.link, "Đổi liên kết", () => openMediaDialog({ mode: e.type === "video" ? "video" : "embed", target: e }));
+  } else {
+    mk(ICONS.image, "Đổi ảnh", () => openImageDialog({ target: e }));
+  }
+  mk(ICONS.trash, "Xóa", () => deleteSelection(), "danger");
+}
+if (view.media) view.media.onInteractChange = () => { ctxBar.dataset.id = ""; scheduleOverlay(); };
+
+/* ============ công cụ ============ */
+
+const LINE_TOOLS = {
+  "line": { type: "line", label: "Đường thẳng" },
+  "arrow": { type: "arrow", label: "Mũi tên" },
+  "conn-elbow": { type: "connector", route: "elbow", label: "Nối gấp khúc" },
+  "conn-curve": { type: "connector", route: "curve", label: "Nối cong" },
+  "conn-straight": { type: "connector", route: "straight", label: "Nối thẳng" },
+};
+const SIZES = {
+  "default": [160, 96], "ellipse": [140, 96], "diamond": [140, 104], "star": [124, 118], "plus": [100, 100], "heart": [124, 112],
+  "cylinder": [120, 130], "cloud": [176, 108], "callout": [176, 116], "arrow-right": [176, 88], "chevron": [160, 88],
+  "triangle": [136, 116], "right-triangle": [136, 116], "pentagon": [132, 126], "hexagon": [152, 104], "octagon": [132, 132],
+  "note": [184, 144], "frame": [420, 280],
+};
+const isBoxTool = (t) => !!SHAPES[t] || t === "note" || t === "frame";
+
+function setTool(t, locked = false) {
+  if (presenting) return;
+  closeEditor(true);
+  tool = t; toolLocked = locked && t !== "select" && t !== "hand";
+  host.style.cursor = t === "hand" ? "grab" : t === "select" ? "default" : "crosshair";
+  if (t !== "select") { /* giữ vùng chọn để dễ thấy */ }
+  hoverId = null;
+  redraw();
+}
+function afterCreate() {
+  if (!toolLocked) setTool("select");
+}
+
+/* ============ con trỏ chuột ============ */
+
+function eventWorld(e) { return view.screenToWorld(e.clientX, e.clientY); }
+
+function dragTracker(e, { move, up, cancel }) {
+  const pid = e.pointerId;
+  const mv = (ev) => { if (ev.pointerId !== pid || view.pinching) return; move(ev); };
+  const end = (ev) => { if (ev.pointerId !== pid) return; cleanup(); action = null; up(ev); };
+  const abort = () => { cleanup(); action = null; cancel?.(); revertToHistory(); redraw(true); };
+  const key = (ev) => { if (ev.key === "Escape") { ev.stopPropagation(); ev.preventDefault(); abort(); } };
+  function cleanup() {
+    window.removeEventListener("pointermove", mv);
+    window.removeEventListener("pointerup", end);
+    window.removeEventListener("pointercancel", abortOnCancel);
+    window.removeEventListener("keydown", key, true);
+    connectHot = null;
+  }
+  const abortOnCancel = (ev) => { if (ev.pointerId === pid) abort(); };
+  window.addEventListener("pointermove", mv);
+  window.addEventListener("pointerup", end);
+  window.addEventListener("pointercancel", abortOnCancel);
+  window.addEventListener("keydown", key, true);
+  action = { abort };
+}
+function cancelAction() { if (action) action.abort(); }
+
+host.addEventListener("pointerdown", (e) => {
+  if (e.target.closest(".ctx-bar, .canvas-hud, .text-editor-overlay, .media-exit")) return;
+  if (presenting) {
+    if ((e.button === 0 || e.button === 1) && !e.target.closest(".media-box.is-interactive")) view.startPan(e);
+    return;
+  }
+  if (editing) { closeEditor(true); }
+  if (e.button === 1 || (e.button === 0 && (spaceDown || tool === "hand"))) { e.preventDefault(); view.startPan(e); return; }
+  if (e.button !== 0) return;
+  if (CP.isOpen()) CP.close();
+
+  const world = eventWorld(e);
+  const hd = e.target.closest?.("[data-handle]");
+  if (hd) {
+    const kind = hd.dataset.handle;
+    if (kind === "resize") return startResize(e, hd.dataset.name);
+    if (kind === "scale") return startScale(e, hd.dataset.name);
+    if (kind === "rotate") return startRotate(e);
+    if (kind === "vertex") return startVertex(e, byId([...selection][0]), +hd.dataset.idx, false);
+    if (kind === "anchor") return startConnectFromAnchor(e, byId([...selection][0]), hd.dataset.side);
+  }
+
+  const tol = 6 / view.zoom;
+  if (tool === "select") {
+    const hit = hitTest(doc, world.x, world.y, tol);
+    const rootEl = hit ? doc.rootOf(hit) : null;
+    if (rootEl) {
+      if (e.shiftKey) {
+        if (selection.has(rootEl.id)) selection.delete(rootEl.id); else selection.add(rootEl.id);
+        redraw(true);
+        if (!selection.has(rootEl.id)) return;
+      } else if (!selection.has(rootEl.id)) {
+        selection = new Set([rootEl.id]);
+        redraw(true);
+      }
+      if (e.altKey) duplicateSelection(true);
+      startMove(e, world);
+    } else {
+      if (!e.shiftKey && selection.size) { selection.clear(); redraw(true); }
+      startMarquee(e, world);
+    }
+    return;
+  }
+  if (LINE_TOOLS[tool]) return startDrawLine(e, world);
+  if (tool === "text") return createTextAt(world);
+  if (isBoxTool(tool)) return startDrawBox(e, world);
+});
+
+/* ---- di chuyển ---- */
+function startMove(e, worldStart) {
+  const movingIds = new Set(doc.leaves([...selection]));
+  // Khung (frame): kéo theo các phần tử nằm hoàn toàn bên trong
+  for (const r of selRoots()) {
+    if (r.type !== "frame") continue;
+    const fb = elementBox(r);
+    for (const o of doc.elements) {
+      if (o.id === r.id || o.type === "group" || movingIds.has(o.id)) continue;
+      const b = worldBBox(o);
+      if (b.x >= fb.x && b.y >= fb.y && b.x + b.w <= fb.x + fb.w && b.y + b.h <= fb.y + fb.h) movingIds.add(o.id);
+    }
+  }
+  const items = [...movingIds].map(byId).filter(Boolean).map((o) => ({ o, x: o.x, y: o.y, pts: o.points?.map((p) => [...p]) }));
+  if (!items.length) return;
+  const bb0 = boundsOf(items.map((i) => i.o));
+  let moved = false;
+  const sx0 = e.clientX, sy0 = e.clientY;
+  dragTracker(e, {
+    move(ev) {
+      if (!moved && Math.hypot(ev.clientX - sx0, ev.clientY - sy0) < 3) return;
+      moved = true;
+      host.style.cursor = "move";
+      const w = eventWorld(ev);
+      let dx = w.x - worldStart.x, dy = w.y - worldStart.y;
+      if (ev.shiftKey) { if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0; }
+      if (bb0) { dx = sn(bb0.minX + dx, ev) - bb0.minX; dy = sn(bb0.minY + dy, ev) - bb0.minY; }
+      for (const it of items) {
+        const o = it.o;
+        o.x = it.x + dx; o.y = it.y + dy;
+        if (it.pts && o.points) {
+          o.points = it.pts.map((p, i) => {
+            const last = i === it.pts.length - 1;
+            // đầu đã gắn vào hình không thuộc nhóm đang kéo thì giữ nguyên (tự bám theo hình)
+            if (i === 0 && o.startId && !movingIds.has(o.startId)) return p;
+            if (last && o.endId && !movingIds.has(o.endId)) return p;
+            return [p[0] + dx, p[1] + dy];
+          });
+        }
+      }
+      redrawNow();
+    },
+    up() {
+      host.style.cursor = tool === "hand" ? "grab" : "default";
+      if (moved) { commit("move"); redraw(); }
     },
   });
+}
 
-  let tool = "select";
-  let selection = new Set();
-  let clipboard = null;
-  let dirty = false;
-  let suppressDirty = false;
-  let editingId = null;      // phần tử đang sửa chữ (ẩn chữ SVG để không bị chồng)
-  let rotateHud = null;      // nhãn góc xoay khi đang kéo núm xoay
-
-  const selected = () => [...selection].map((id) => doc.byId(id)).filter(Boolean);
-
-  /* ============ dirty tracking + unload guard ============ */
-
-  const saveStateEl = document.getElementById("saveState");
-  function markDirty() {
-    if (suppressDirty) return;
-    dirty = true;
-    saveStateEl.textContent = "Thay đổi chưa lưu";
-    saveStateEl.classList.add("dirty");
-  }
-  function markClean() {
-    dirty = false;
-    saveStateEl.textContent = "";
-    saveStateEl.classList.remove("dirty");
-  }
-
-  window.addEventListener("beforeunload", (e) => {
-    if (dirty) {
-      e.preventDefault();
-      e.returnValue = "";
-    }
-  });
-
-  /** Dialog cảnh báo trước khi rời editor. */
-  let leaving = false;
-  async function confirmLeave(destination) {
-    if (!dirty || leaving) return true;
-    const choice = await UI.modal({
-      title: "Bạn có thay đổi chưa được lưu.",
-      body: "Bạn có muốn lưu trước khi rời khỏi không?",
-      actions: [
-        { label: "Hủy", class: "btn-secondary", value: "cancel" },
-        { label: "Rời khỏi", class: "btn-secondary", value: "leave" },
-        { label: "Lưu", class: "btn-primary", value: "save" },
-      ],
-    });
-    if (choice === "save") {
-      const ok = await save();
-      if (!ok) return false;
-      return true;
-    }
-    if (choice === "leave") {
-      dirty = false; // cho phép đi
-      return true;
-    }
-    return false;
-  }
-
-  document.addEventListener("click", async (e) => {
-    const a = e.target.closest("a[href]");
-    if (!a || a.target === "_blank") return;
-    const href = a.getAttribute("href");
-    if (!href || href.startsWith("#") || href.startsWith("javascript:")) return;
-    if (a.closest(".side-menu") && (href === "/" || href.startsWith("/diagrams") || href.startsWith("/settings") || href.startsWith("/admin") || href.startsWith("/create"))) {
-      if (!(await confirmLeave(href))) { e.preventDefault(); SideMenu.close(); }
-    }
-  });
-
-  /* ============ tools ============ */
-
-  const TOOLS = [
-    { id: "select", icon: "select", tip: "Chọn (V)" },
-    { id: "hand", icon: "hand", tip: "Di chuyển canvas (H)" },
-    { sep: true },
-    { id: "rectangle", icon: "rect", tip: "Hình chữ nhật (R)" },
-    { id: "rounded-rectangle", icon: "roundRect", tip: "Bo góc (Shift+R)" },
-    { id: "ellipse", icon: "circle", tip: "Ellipse (O)" },
-    { id: "diamond", icon: "diamond", tip: "Diamond (D)" },
-    { sep: true },
-    { id: "line", icon: "line", tip: "Đường thẳng (L)" },
-    { id: "arrow", icon: "arrow", tip: "Mũi tên (A)" },
-    { id: "connector", icon: "connector", tip: "Connector nối shape (C)" },
-    { sep: true },
-    { id: "text", icon: "text", tip: "Text (T)" },
-    { id: "note", icon: "note", tip: "Sticky note (N)" },
-    { id: "frame", icon: "frame", tip: "Frame (F)" },
-    { sep: true },
-    { id: "undo", icon: "undo", tip: "Undo (Ctrl+Z)" },
-    { id: "redo", icon: "redo", tip: "Redo (Ctrl+Shift+Z)" },
-  ];
-
-  const toolRail = document.getElementById("toolRail");
-  for (const t of TOOLS) {
-    if (t.sep) {
-      const s = document.createElement("div");
-      s.className = "tool-sep";
-      toolRail.appendChild(s);
-      continue;
-    }
-    const b = document.createElement("button");
-    b.className = "tool-btn";
-    b.dataset.tool = t.id;
-    b.dataset.tip = t.tip;
-    b.setAttribute("aria-label", t.tip);
-    b.setAttribute("aria-pressed", tool === t.id ? "true" : "false");
-    b.innerHTML = ICONS[t.icon];
-    b.addEventListener("click", () => {
-      if (t.id === "undo") { undo(); return; }
-      if (t.id === "redo") { redo(); return; }
-      setTool(t.id);
-    });
-    toolRail.appendChild(b);
-  }
-
-  function setTool(t) {
-    tool = t;
-    toolRail.querySelectorAll(".tool-btn[data-tool]").forEach((b) => {
-      const active = b.dataset.tool === t;
-      b.classList.toggle("active", active);
-      b.setAttribute("aria-pressed", String(active));
-    });
-    host.style.cursor = t === "hand" ? "grab" : t === "select" ? "default" : "crosshair";
-  }
-  setTool("select");
-
-  function afterHistoryJump() {
-    selection = new Set([...selection].filter((id) => doc.byId(id)));
-    renderAll();
-  }
-  function undo() { history.undo(); afterHistoryJump(); }
-  function redo() { history.redo(); afterHistoryJump(); }
-
-  /* ============ side menu + theme ============ */
-
-  Theme.init();
-  SideMenu.build({
-    user,
-    currentPath: isEdit ? "/diagrams" : "/create",
-    items: [
-      { href: "/", label: "Trang chủ", icon: "home" },
-      { href: "/create", label: "Tạo sơ đồ", icon: "plus" },
-      { href: "/diagrams", label: "Danh sách sơ đồ", icon: "layers" },
-      { href: "/settings", label: "Cài đặt", icon: "settings" },
-      { href: "/admin", label: "Quản lý trang web", icon: "shield", adminOnly: true },
-    ],
-  });
-  const menuBtn = document.getElementById("menuBtn");
-  menuBtn.innerHTML = ICONS.menu;
-  menuBtn.addEventListener("click", () => SideMenu.open());
-
-  const panelToggle = document.getElementById("panelToggle");
-  panelToggle.innerHTML = ICONS.settings;
-  panelToggle.addEventListener("click", () => {
-    document.getElementById("stylePanel").classList.toggle("open");
-  });
-
-  /* ============ name input ============ */
-
-  const nameInput = document.getElementById("diagramName");
-  nameInput.value = isEdit ? BOOT.diagram.name : "Sơ đồ chưa đặt tên";
-  nameInput.addEventListener("input", markDirty);
-  nameInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); nameInput.blur(); save(); }
-    e.stopPropagation(); // tránh trigger shortcut editor
-  });
-
-  /* ============ save ============ */
-
-  async function save() {
-    const name = nameInput.value.trim() || "Sơ đồ chưa đặt tên";
-    if (name.length > 120) {
-      Toast.error("Tên tối đa 120 ký tự.");
-      return false;
-    }
-    if (doc.elements.length > 2000) {
-      Toast.error("Quá nhiều phần tử (tối đa 2000).");
-      return false;
-    }
-    const data = doc.serialize();
-    const body = { name, data };
-    const btn = document.getElementById("saveBtn");
-    btn.disabled = true;
-    try {
-      const res = isEdit
-        ? await Api.patch(`/api/v1/diagrams/${diagramId}`, body)
-        : await Api.post("/api/v1/diagrams", body);
-      if (res.success) {
-        markClean();
-        Toast.ok("Đã lưu sơ đồ.");
-        if (!isEdit) {
-          leaving = true;
-          window.history.replaceState(null, "", `/edit/${res.data.diagram.id}`);
-          // Cập nhật trạng thái local để lưu tiếp lại là PATCH
-          window.location.reload();
-        }
-        return true;
-      }
-      const fields = res.error?.details ? Object.entries(res.error.details).slice(0, 2).map(([k, v]) => `${k}: ${v}`).join(" · ") : "";
-      Toast.error((res.error?.message || "Không lưu được.") + (fields ? ` (${fields})` : ""));
-      return false;
-    } finally {
-      btn.disabled = false;
-    }
-  }
-
-  document.getElementById("saveBtn").addEventListener("click", save);
-
-  /* ============ render ============ */
-
-  function renderScene() {
-    view.content.replaceChildren();
-    // Cập nhật connector gắn shape trước
-    for (const e of doc.elements) {
-      if (e.type === "connector" || ((e.type === "arrow" || e.type === "line") && (e.startId || e.endId))) {
-        updateConnectorPoints(doc, e);
-      }
-    }
-    for (const e of doc.elements) {
-      const node = Render.element(e, { hideText: e.id === editingId });
-      if (selection.has(e.id)) node.classList.add("selected");
-      view.content.appendChild(node);
-    }
-    renderOverlay();
-  }
-
-  function renderAll() {
-    renderScene();
-    renderStylePanel();
-  }
-
-  let rafPending = false;
-  let rafFull = false;
-  /** Vẽ lại ở khung hình kế tiếp. full = true: cập nhật cả panel thuộc tính. */
-  function requestRender(full = false) {
-    rafFull = rafFull || full;
-    if (rafPending) return;
-    rafPending = true;
-    requestAnimationFrame(() => {
-      rafPending = false;
-      const f = rafFull;
-      rafFull = false;
-      if (f) renderAll(); else renderScene();
-    });
-  }
-
-  /* ---- hình học của tay cầm ---- */
-
-  const HANDLE_NAMES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
-  const HANDLE_BASE = { n: 0, ne: 45, e: 90, se: 135, s: 0, sw: 45, w: 90, nw: 135 };
-
-  function handleCursor(name, rot) {
-    const a = ((((HANDLE_BASE[name] + rot) % 180) + 180) % 180) / 45;
-    return ["ns-resize", "nesw-resize", "ew-resize", "nwse-resize"][Math.round(a) % 4];
-  }
-
-  function autoHeight(e) {
-    const ts = Layout.textStyle(e);
-    return ts.autoFit === "resize" && TEXT_TYPES.has(e.type);
-  }
-
-  function isRotatable(e) {
-    if (e.type === "group" || e.type === "image") return false;
-    if (!isLineType(e.type)) return true;
-    return e.type !== "connector" && !e.startId && !e.endId && Array.isArray(e.points) && e.points.length >= 2;
-  }
-
-  function renderOverlay() {
-    view.overlay.replaceChildren();
-    const z = view.zoom;
-    const sel = selected();
-    if (sel.length === 0) return;
-    const accent = "var(--accent)";
-
-    const addRotateHandle = (parent, cx, topY) => {
-      const off = 26 / z;
-      parent.appendChild(el("line", { x1: cx, y1: topY, x2: cx, y2: topY - off, stroke: accent, "stroke-width": 1.5 / z, "pointer-events": "none" }));
-      const c = el("circle", { cx, cy: topY - off, r: 6.5 / z, fill: "var(--bg-elev)", stroke: accent, "stroke-width": 1.5 / z, class: "rotate-handle", "data-handle": "rot" });
-      c.style.cursor = "grab";
-      parent.appendChild(c);
-    };
-
-    for (const e of sel) {
-      if (isLineType(e.type)) {
-        if (e.points && e.points.length >= 2) {
-          view.overlay.appendChild(el("path", {
-            d: "M" + e.points.map((p) => `${p[0]} ${p[1]}`).join(" L"),
-            fill: "none", stroke: accent, "stroke-opacity": "0.35", "stroke-width": 8 / z,
-            "stroke-linecap": "round", "stroke-linejoin": "round", "pointer-events": "none",
-          }));
-        }
-        continue;
-      }
-      const w = e.width || 0, h = e.height || 0;
-      const [cx, cy] = Geometry.center(e);
-      const g = el("g");
-      if (e.rotation) g.setAttribute("transform", `rotate(${e.rotation} ${cx} ${cy})`);
-      g.appendChild(el("rect", {
-        x: e.x, y: e.y, width: w, height: h, fill: "none", stroke: accent,
-        "stroke-width": 1.5 / z, class: "selection-box", "pointer-events": "none",
-      }));
-      if (sel.length === 1) {
-        const hs = 9 / z;
-        const pos = {
-          nw: [e.x, e.y], n: [e.x + w / 2, e.y], ne: [e.x + w, e.y], e: [e.x + w, e.y + h / 2],
-          se: [e.x + w, e.y + h], s: [e.x + w / 2, e.y + h], sw: [e.x, e.y + h], w: [e.x, e.y + h / 2],
-        };
-        const hideNS = autoHeight(e) || w * z < 30;
-        const hideEW = h * z < 30;
-        for (const name of HANDLE_NAMES) {
-          if ((name === "n" || name === "s") && hideNS) continue;
-          if ((name === "e" || name === "w") && hideEW && !(e.type === "text")) continue;
-          const [hx, hy] = pos[name];
-          const r = el("rect", {
-            x: hx - hs / 2, y: hy - hs / 2, width: hs, height: hs, rx: 1.5 / z,
-            class: `resize-handle ${name}`, "data-handle": name, "stroke-width": 1.5 / z,
-          });
-          r.style.cursor = handleCursor(name, e.rotation || 0);
-          g.appendChild(r);
-        }
-        if (isRotatable(e)) addRotateHandle(g, e.x + w / 2, e.y);
-      }
-      view.overlay.appendChild(g);
-    }
-
-    // Nhiều phần tử (hoặc một đường tự do): khung chung + núm xoay nhóm
-    const rot = sel.filter(isRotatable);
-    const needGroupBox = sel.length > 1 || (sel.length === 1 && isLineType(sel[0].type));
-    if (needGroupBox && rot.length > 0 && rot.length === sel.filter((e) => !isLineType(e.type) || isRotatable(e)).length) {
-      const b = doc.bounds(rot);
-      if (b) {
-        view.overlay.appendChild(el("rect", {
-          x: b.minX, y: b.minY, width: b.w, height: b.h, fill: "none", stroke: accent,
-          "stroke-width": 1.5 / z, "stroke-dasharray": `${5 / z} ${4 / z}`, "pointer-events": "none",
-        }));
-        addRotateHandle(view.overlay, b.minX + b.w / 2, b.minY);
-      }
-    }
-
-    if (rotateHud) {
-      const fs = 12 / z;
-      const text = el("text", { x: rotateHud.x, y: rotateHud.y, "font-size": fs, fill: "#fff", "font-family": "system-ui, sans-serif", "font-weight": "600", "pointer-events": "none" });
-      text.textContent = rotateHud.text;
-      const wBox = (rotateHud.text.length * 0.62 + 1.2) * fs;
-      view.overlay.appendChild(el("rect", { x: rotateHud.x - 0.5 * fs, y: rotateHud.y - fs * 1.1, width: wBox, height: fs * 1.6, rx: 4 / z, fill: "#111827", "fill-opacity": "0.88", "pointer-events": "none" }));
-      view.overlay.appendChild(text);
-    }
-  }
-
-  /* ============ pointer interactions ============ */
-
-  host.addEventListener("pointerdown", (e) => {
-    if (e.target.closest && e.target.closest(".text-editor-overlay")) return;
-    if (e.button === 1) { view.startPan(e); return; }
-    if (e.button !== 0) return;
-    if (tool === "hand") { view.startPan(e); return; }
-
-    // Núm xoay / núm đổi cỡ
-    const handle = e.target.closest ? e.target.closest("[data-handle]") : null;
-    if (handle) {
-      e.preventDefault();
-      const kind = handle.getAttribute("data-handle");
-      if (kind === "rot") startRotate(e); else startResize(kind);
-      return;
-    }
-
-    const world = view.screenToWorld(e.clientX, e.clientY);
-    const hit = hitElement(world);
-    if (tool === "select") {
-      if (hit) {
-        if (e.shiftKey) {
-          if (selection.has(hit.id)) selection.delete(hit.id); else selection.add(hit.id);
-        } else if (!selection.has(hit.id)) {
-          selection = new Set([hit.id]);
-        }
-        startMove(e, world);
-      } else {
-        selection.clear();
-        startMarquee(e, world);
-      }
-      requestRender(true);
-      return;
-    }
-
-    // Công cụ vẽ
-    if (hit && (tool === "connector" || tool === "arrow")) {
-      startConnectFromShape(e, world, hit);
-      return;
-    }
-    if (tool === "text") {
-      e.preventDefault();
-      createTextAt(world);
-      return;
-    }
-    startDraw(e, world);
-  });
-
-  function hitElement(world) {
-    // Ưu tiên phần tử nằm trên: duyệt ngược
-    for (let i = doc.elements.length - 1; i >= 0; i--) {
-      const e = doc.elements[i];
-      if (isLineType(e.type)) {
-        if (e.points && hitPolyline(e.points, world, 10 / view.zoom)) return e;
-        continue;
-      }
-      const [lx, ly] = Geometry.toLocal(e, world.x, world.y);
-      const slop = e.type === "text" ? 4 : 0;
-      const w = e.width || 0, h = e.height || 0;
-      if (lx >= e.x - slop && lx <= e.x + w + slop && ly >= e.y - slop && ly <= e.y + h + slop) return e;
-    }
-    return null;
-  }
-
-  function hitPolyline(points, world, tolerance) {
-    for (let i = 0; i < points.length - 1; i++) {
-      if (distToSegment(world.x, world.y, points[i], points[i + 1]) < tolerance) return true;
-    }
-    return false;
-  }
-
-  function distToSegment(px, py, [ax, ay], [bx, by]) {
-    const dx = bx - ax, dy = by - ay;
-    const len2 = dx * dx + dy * dy;
-    const t = len2 === 0 ? 0 : clamp(((px - ax) * dx + (py - ay) * dy) / len2, 0, 1);
-    const cx = ax + t * dx, cy = ay + t * dy;
-    return Math.hypot(px - cx, py - cy);
-  }
-
-  /* ---- draw shape ---- */
-
-  function startDraw(e, worldStart) {
-    const id = uid();
-    const defaults = { ...DEFAULT_STYLES[tool] };
-    const shape = {
-      id, type: tool, x: worldStart.x, y: worldStart.y, width: 0, height: 0,
-      text: "", style: defaults,
-    };
-    if (tool === "line" || tool === "arrow") {
-      shape.points = [[worldStart.x, worldStart.y], [worldStart.x, worldStart.y]];
-      delete shape.width; delete shape.height;
-    }
-    doc.add(shape);
-    selection = new Set([id]);
-    action = { kind: "draw", id, origin: { ...worldStart } };
-
-    const move = (ev) => {
-      const w = view.screenToWorld(ev.clientX, ev.clientY);
-      const sx = view.snapEnabled ? snap(w.x) : w.x;
-      const sy = view.snapEnabled ? snap(w.y) : w.y;
-      const sh = doc.byId(id);
-      if (!sh) return;
-      if (sh.points) {
-        sh.points[1] = [sx, sy];
-        if (ev.shiftKey) {
-          // giới hạn 0/45/90 độ
-          const [x0, y0] = sh.points[0];
-          const dx = sx - x0, dy = sy - y0;
-          const ang = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4);
-          const len = Math.hypot(dx, dy);
-          sh.points[1] = [x0 + Math.cos(ang) * len, y0 + Math.sin(ang) * len];
-        }
-      } else {
-        sh.x = Math.min(sx, action.origin.x);
-        sh.y = Math.min(sy, action.origin.y);
-        sh.width = Math.abs(sx - action.origin.x);
-        sh.height = Math.abs(sy - action.origin.y);
-        if (ev.shiftKey) {
-          const m = Math.max(sh.width, sh.height);
-          sh.width = m; sh.height = m;
-        }
-      }
-      requestRender();
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      const sh = doc.byId(id);
-      if (sh) {
-        if (!sh.points && (sh.width < 4 || sh.height < 4)) {
-          // click đơn → shape mặc định
-          sh.width = sh.width < 4 ? 160 : sh.width;
-          sh.height = sh.height < 4 ? 90 : sh.height;
-          sh.x = view.snapEnabled ? snap(sh.x) : sh.x;
-          sh.y = view.snapEnabled ? snap(sh.y) : sh.y;
-        }
-        if (sh.points && (Math.abs(sh.points[1][0] - sh.points[0][0]) + Math.abs(sh.points[1][1] - sh.points[0][1]) < 6)) {
-          doc.remove([id]);
-          selection.clear();
-        }
-      }
-      history.snapshot("draw");
-      action = null;
-      requestRender(true);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
-
-  let action = null; // {kind: 'draw'|'connect', ...}
-
-  /* ---- move ---- */
-
-  function startMove(e, worldStart) {
-    if (selection.size === 0) return;
-    const originals = [...selection].map((id) => {
-      const el0 = doc.byId(id);
-      return el0 ? { id, x: el0.x, y: el0.y, points: el0.points?.map((p) => [...p]) } : null;
-    }).filter(Boolean);
-    if (originals.length === 0) return;
-    let moved = false;
-
-    const move = (ev) => {
-      const w = view.screenToWorld(ev.clientX, ev.clientY);
-      let dx = w.x - worldStart.x;
-      let dy = w.y - worldStart.y;
-      if (!moved && Math.hypot(dx, dy) * view.zoom < 3) return; // chống rung tay khi chỉ click
-      if (ev.shiftKey) {
-        if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0;
-      }
-      if (view.snapEnabled) {
-        const first = originals[0];
-        dx = snap(first.x + dx) - first.x;
-        dy = snap(first.y + dy) - first.y;
-      }
-      for (const o of originals) {
-        const el0 = doc.byId(o.id);
-        if (!el0) continue;
-        el0.x = o.x + dx;
-        el0.y = o.y + dy;
-        if (o.points && el0.points) {
-          for (let i = 0; i < el0.points.length; i++) {
-            el0.points[i] = [o.points[i][0] + dx, o.points[i][1] + dy];
-          }
-        }
-      }
+/* ---- khung chọn ---- */
+function startMarquee(e, worldStart) {
+  const base = e.shiftKey ? new Set(selection) : new Set();
+  let rect = null, moved = false;
+  const sx0 = e.clientX, sy0 = e.clientY;
+  dragTracker(e, {
+    move(ev) {
+      if (!moved && Math.hypot(ev.clientX - sx0, ev.clientY - sy0) < 3) return;
       moved = true;
-      requestRender();
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      if (moved) { history.snapshot("move"); requestRender(true); }
-      action = null;
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
-
-  /* ---- resize (có tính góc xoay, giữ cố định điểm đối diện) ---- */
-
-  function startResize(handleName) {
-    const sel = selected();
-    if (sel.length !== 1 || isLineType(sel[0].type)) return;
-    const e0 = sel[0];
-    const hx = handleName.includes("e") ? 1 : handleName.includes("w") ? -1 : 0;
-    const hy = handleName.includes("s") ? 1 : handleName.includes("n") ? -1 : 0;
-    const isText = e0.type === "text";
-    const corner = hx !== 0 && hy !== 0;
-    const scaleText = isText && corner;                 // góc của Text = phóng to/thu nhỏ chữ
-    const orig = {
-      x: e0.x, y: e0.y, w: e0.width || 0, h: e0.height || 0, rot: e0.rotation || 0,
-      fs: Layout.textStyle(e0).size, style: { ...(e0.style || {}) },
-    };
-    const cx0 = orig.x + orig.w / 2, cy0 = orig.y + orig.h / 2;
-    // Text kéo cạnh trái/phải: giữ nguyên mép trên (chiều cao tự theo chữ)
-    const ay = isText && hy === 0 ? 1 : hy;
-    const anchorLocal = [cx0 - hx * orig.w / 2, cy0 - ay * orig.h / 2];
-    const anchor = rotPoint(anchorLocal[0], anchorLocal[1], cx0, cy0, orig.rot);
-    const minW = isText ? 16 : 8, minH = isText ? 16 : 8;
-    let changed = false;
-
-    const move = (ev) => {
-      let m = view.screenToWorld(ev.clientX, ev.clientY);
-      if (!orig.rot && view.snapEnabled && !scaleText) m = { x: snap(m.x), y: snap(m.y) };
-      const [px, py] = rotPoint(m.x, m.y, anchor[0], anchor[1], -orig.rot);
-      const ux = px - anchor[0], uy = py - anchor[1];
-      let nw = hx ? Math.max(minW, hx * ux) : orig.w;
-      let nh = hy ? Math.max(minH, hy * uy) : orig.h;
-
-      const el0 = doc.byId(e0.id);
-      if (!el0) return;
-      el0.style = { ...orig.style };
-
-      if (scaleText && orig.w > 0 && orig.h > 0) {
-        let k = (nw * orig.w + nh * orig.h) / (orig.w * orig.w + orig.h * orig.h);
-        const fs = clamp(orig.fs * k, MIN_FONT, MAX_FONT);
-        k = fs / orig.fs;
-        el0.style.fontSize = Math.round(fs * 10) / 10;
-        el0.width = orig.w * k;
-        el0.height = orig.h * k;
-        Layout.fit(el0);
-      } else {
-        if (corner && ev.shiftKey && orig.w > 0 && orig.h > 0) {
-          const k = Math.max(nw / orig.w, nh / orig.h);
-          nw = Math.max(minW, orig.w * k); nh = Math.max(minH, orig.h * k);
-        }
-        if (isText && hx !== 0 && hy === 0) { el0.style.wrap = true; }
-        el0.width = nw;
-        el0.height = nh;
-        Layout.fit(el0);
-      }
-      const fw = el0.width, fh = el0.height;
-      const [ox, oy] = rotPoint(hx * fw / 2, ay * fh / 2, 0, 0, orig.rot);
-      const ncx = anchor[0] + ox, ncy = anchor[1] + oy;
-      el0.x = ncx - fw / 2;
-      el0.y = ncy - fh / 2;
-      changed = true;
-      requestRender();
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      if (changed) history.snapshot("resize");
-      requestRender(true);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
-
-  /* ---- rotate ---- */
-
-  function startRotate(ev) {
-    const els = selected().filter(isRotatable);
-    if (els.length === 0) return;
-    const single = els.length === 1 && !isLineType(els[0].type);
-    let pivot;
-    if (single) pivot = Geometry.center(els[0]);
-    else { const b = doc.bounds(els); pivot = [b.minX + b.w / 2, b.minY + b.h / 2]; }
-    const originals = els.map((e) => ({
-      id: e.id, x: e.x, y: e.y, rot: e.rotation || 0, points: e.points?.map((p) => [...p]),
-    }));
-    const p0 = view.screenToWorld(ev.clientX, ev.clientY);
-    const a0 = Math.atan2(p0.y - pivot[1], p0.x - pivot[0]) / DEG;
-    let changed = false;
-    host.style.cursor = "grabbing";
-
-    const move = (mv) => {
-      const w = view.screenToWorld(mv.clientX, mv.clientY);
-      const a1 = Math.atan2(w.y - pivot[1], w.x - pivot[0]) / DEG;
-      let delta = a1 - a0;
-      if (mv.shiftKey) {
-        if (single) delta = Math.round((originals[0].rot + delta) / 15) * 15 - originals[0].rot;
-        else delta = Math.round(delta / 15) * 15;
-      }
-      for (const o of originals) {
-        const e = doc.byId(o.id);
-        if (!e) continue;
-        e.x = o.x; e.y = o.y;
-        e.rotation = o.rot;
-        if (o.points) e.points = o.points.map((p) => [...p]);
-        Transform.rotateBy(e, delta, pivot);
-      }
-      const shown = single ? normAngle(originals[0].rot + delta) : normAngle(delta);
-      rotateHud = { x: w.x + 14 / view.zoom, y: w.y - 10 / view.zoom, text: `${Math.round(shown)}°` };
-      changed = true;
-      requestRender();
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      host.style.cursor = tool === "hand" ? "grab" : tool === "select" ? "default" : "crosshair";
-      rotateHud = null;
-      if (changed) history.snapshot("rotate");
-      requestRender(true);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
-
-  /** Xoay các phần tử đang chọn thêm `delta` độ (quanh tâm của chúng). */
-  function rotateSelectionBy(delta) {
-    const els = selected().filter(isRotatable);
-    if (els.length === 0) return;
-    let pivot;
-    if (els.length === 1 && !isLineType(els[0].type)) pivot = Geometry.center(els[0]);
-    else { const b = doc.bounds(els); pivot = [b.minX + b.w / 2, b.minY + b.h / 2]; }
-    for (const e of els) Transform.rotateBy(e, delta, pivot);
-    history.snapshot("rotate");
-    renderAll();
-  }
-
-  /* ---- marquee ---- */
-
-  function startMarquee(e, worldStart) {
-    let rectEl = null;
-    const move = (ev) => {
-      const w = view.screenToWorld(ev.clientX, ev.clientY);
+      const w = eventWorld(ev);
       const x = Math.min(w.x, worldStart.x), y = Math.min(w.y, worldStart.y);
       const width = Math.abs(w.x - worldStart.x), height = Math.abs(w.y - worldStart.y);
-      if (!rectEl) {
-        rectEl = el("rect", { class: "selection-marquee" });
-        view.overlay.appendChild(rectEl);
+      renderOverlay();
+      rect = { x, y, width, height };
+      view.overlay.appendChild(el("rect", { ...rect, class: "selection-marquee" }));
+      // chọn trực tiếp khi kéo (giao nhau với khung)
+      const next = new Set(base);
+      for (const o of doc.elements) {
+        if (o.type === "group") continue;
+        const b = worldBBox(o);
+        if (b.x < x + width && b.x + b.w > x && b.y < y + height && b.y + b.h > y) next.add(doc.rootOf(o).id);
       }
-      rectEl.setAttribute("x", x); rectEl.setAttribute("y", y);
-      rectEl.setAttribute("width", width); rectEl.setAttribute("height", height);
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      if (rectEl) {
-        const rx = +rectEl.getAttribute("x"), ry = +rectEl.getAttribute("y");
-        const rw = +rectEl.getAttribute("width"), rh = +rectEl.getAttribute("height");
-        rectEl.remove();
-        if (rw > 4 || rh > 4) {
-          for (const e0 of doc.elements) {
-            const r = doc.hitRect(e0);
-            if (rx <= r.x && ry <= r.y && rx + rw >= r.x + r.w && ry + rh >= r.y + r.h) {
-              selection.add(e0.id);
-            }
-          }
-          requestRender(true);
+      selection = next;
+    },
+    up() { redraw(true); },
+    cancel() { selection = base; },
+  });
+}
+
+/* ---- đổi kích thước một phần tử (có xoay) ---- */
+function startResize(e, name) {
+  const t = byId([...selection][0]);
+  if (!t) return;
+  const b0 = elementBox(t);
+  const rot = t.rotation || 0;
+  const c0 = [b0.x + b0.w / 2, b0.y + b0.h / 2];
+  const hasE = name.includes("e"), hasW = name.includes("w"), hasS = name.includes("s"), hasN = name.includes("n");
+  const ax = hasE ? 0 : hasW ? 1 : 0.5, ay = hasS ? 0 : hasN ? 1 : 0.5;   // điểm neo (đối diện tay nắm)
+  const anchorWorld = rotatePoint(b0.x + ax * b0.w, b0.y + ay * b0.h, c0[0], c0[1], rot);
+  const ratio = b0.w / (b0.h || 1);
+  const lock = t.type === "image" ? t.lockRatio !== false : false;
+  const orig = { x: t.x, y: t.y, w: t.width, h: t.height };
+  const MIN = 12;
+  let changed = false;
+  dragTracker(e, {
+    move(ev) {
+      changed = true;
+      const w = eventWorld(ev);
+      const v = rotatePoint(w.x, w.y, anchorWorld[0], anchorWorld[1], -rot);   // vector trong trục của phần tử
+      let nw = hasE ? v[0] - anchorWorld[0] : hasW ? anchorWorld[0] - v[0] : b0.w;
+      let nh = hasS ? v[1] - anchorWorld[1] : hasN ? anchorWorld[1] - v[1] : b0.h;
+      if (hasE || hasW) nw = Math.max(MIN, nw);
+      if (hasN || hasS) nh = Math.max(MIN, nh);
+      const corner = name.length === 2;
+      if (corner && (lock || ev.shiftKey)) {
+        const k = Math.max(nw / b0.w, nh / b0.h);
+        nw = Math.max(MIN, b0.w * k); nh = Math.max(MIN, b0.h * k);
+      } else {
+        if (hasE || hasW) nw = Math.max(MIN, sn(nw, ev));
+        if (hasN || hasS) nh = Math.max(MIN, sn(nh, ev));
+      }
+      // tâm mới = neo + (nửa kích thước theo hướng kéo), quay về hệ toạ độ thế giới
+      const offX = hasE ? nw / 2 : hasW ? -nw / 2 : 0;
+      const offY = hasS ? nh / 2 : hasN ? -nh / 2 : 0;
+      const [cx, cy] = rotatePoint(anchorWorld[0] + offX, anchorWorld[1] + offY, anchorWorld[0], anchorWorld[1], rot);
+      t.width = nw; t.height = nh; t.x = cx - nw / 2; t.y = cy - nh / 2;
+      redrawNow();
+    },
+    up() { if (changed) { commit("resize"); redraw(); } },
+    cancel() { /* revertToHistory() khôi phục lại */ },
+  });
+}
+
+/* ---- đổi tỉ lệ nhiều phần tử / nhóm ---- */
+function startScale(e, name) {
+  const leaves = selLeaves();
+  const bb = boundsOf(leaves);
+  if (!bb) return;
+  const hasE = name.includes("e"), hasW = name.includes("w"), hasS = name.includes("s"), hasN = name.includes("n");
+  const anchor = [hasE ? bb.minX : hasW ? bb.maxX : bb.minX + bb.w / 2, hasS ? bb.minY : hasN ? bb.maxY : bb.minY + bb.h / 2];
+  const snapshot = leaves.map((o) => ({ o, x: o.x, y: o.y, w: o.width, h: o.height, fs: o.style?.fontSize, pts: o.points?.map((p) => [...p]) }));
+  let changed = false;
+  dragTracker(e, {
+    move(ev) {
+      changed = true;
+      const w = eventWorld(ev);
+      let sx = hasE ? (w.x - anchor[0]) / bb.w : hasW ? (anchor[0] - w.x) / bb.w : 1;
+      let sy = hasS ? (w.y - anchor[1]) / bb.h : hasN ? (anchor[1] - w.y) / bb.h : 1;
+      if (name.length === 2 || ev.shiftKey) { const k = Math.max(sx, sy); sx = sy = k; }
+      sx = Math.max(0.05, sx); sy = Math.max(0.05, sy);
+      for (const s of snapshot) {
+        const o = s.o;
+        const ox = anchor[0] + (s.x - anchor[0]) * sx, oy = anchor[1] + (s.y - anchor[1]) * sy;
+        o.x = ox; o.y = oy;
+        if (s.pts) o.points = s.pts.map((p) => [anchor[0] + (p[0] - anchor[0]) * sx, anchor[1] + (p[1] - anchor[1]) * sy]);
+        if (s.w != null && !isPointType(o.type)) {
+          const quarter = Math.round(((o.rotation || 0) % 180) / 90) % 2 === 1 && (o.rotation || 0) % 90 === 0;
+          const kw = quarter ? sy : sx, kh = quarter ? sx : sy;
+          o.width = Math.max(4, s.w * kw); o.height = Math.max(4, s.h * kh);
+          if (s.fs) o.style = { ...o.style, fontSize: clamp(round(s.fs * Math.sqrt(sx * sy), 1), 6, 200) };
+          if (o.type === "text") fitText(o);
         }
       }
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
-
-  /* ---- connectors ---- */
-
-  function startConnectFromShape(e, world, hitShape) {
-    if (["line", "arrow", "connector", "text"].includes(hitShape.type)) return;
-    const id = uid();
-    const startSide = nearestSide(hitShape, [world.x, world.y]);
-    const shape = {
-      id, type: tool, x: world.x, y: world.y,
-      points: [anchorPoint(hitShape, startSide), [world.x, world.y]],
-      style: { ...DEFAULT_STYLES[tool] },
-      startId: hitShape.id,
-      startSide,
-      endId: undefined,
-    };
-    doc.add(shape);
-    selection = new Set([id]);
-    action = { kind: "connect", id };
-
-    const move = (ev) => {
-      const w = view.screenToWorld(ev.clientX, ev.clientY);
-      const sh = doc.byId(id);
-      if (!sh) return;
-      const target = hitElement(w);
-      if (target && target.id !== hitShape.id && !["line", "arrow", "connector", "text"].includes(target.type)) {
-        sh.endId = target.id;
-        sh.endSide = nearestSide(target, [w.x, w.y]);
-        updateConnectorPoints(doc, sh);
-      } else {
-        sh.endId = undefined;
-        sh.points[sh.points.length - 1] = [w.x, w.y];
-      }
-      requestRender();
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      const sh = doc.byId(id);
-      if (!sh || !sh.endId) {
-        // Không gắn được → xóa
-        if (sh) doc.remove([id]);
-        selection.clear();
-      } else {
-        history.snapshot("connect");
-      }
-      action = null;
-      requestRender(true);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
-
-  /* ---- text editing (sửa chữ ngay trên canvas, đúng phông/cỡ/màu/góc xoay) ---- */
-
-  let activeEditor = null; // { place(), finish(commit) }
-
-  function createTextAt(world) {
-    const id = uid();
-    const x = view.snapEnabled ? snap(world.x) : world.x;
-    const y = view.snapEnabled ? snap(world.y) : world.y;
-    const e = { id, type: "text", x, y, width: 0, height: 0, rotation: 0, text: "", style: { ...DEFAULT_STYLES.text } };
-    doc.add(e);
-    Layout.fit(e);
-    selection = new Set([id]);
-    setTool("select");
-    renderAll();
-    // Mở ô nhập ở tác vụ kế tiếp: nếu mở ngay trong pointerdown, trình duyệt sẽ chuyển focus
-    // sau sự kiện chuột và ô nhập bị blur (= commit chữ rỗng, phần tử bị xóa).
-    setTimeout(() => { if (doc.byId(id) && !activeEditor) editTextElement(e); }, 0);
-  }
-
-  function editTextElement(e) {
-    if (!TEXT_TYPES.has(e.type)) return;
-    if (activeEditor) activeEditor.finish(true);
-    const orig = { text: e.text || "", width: e.width, height: e.height };
-    const ta = document.createElement("textarea");
-    ta.className = "text-editor-overlay";
-    ta.spellcheck = false;
-    ta.setAttribute("aria-label", "Nhập nội dung chữ");
-    ta.value = e.text || "";
-    host.appendChild(ta);
-    editingId = e.id;
-    let finished = false;
-
-    const place = () => {
-      Layout.fit(e);
-      const c = Layout.compute(e);
-      const { ts, box, pad } = c;
-      const k = view.zoom;
-      const [cx, cy] = Geometry.center(e);
-      const sc = view.worldToScreen(cx, cy);
-      const wpx = box.w * k, hpx = box.h * k;
-      const st = ta.style;
-      st.left = `${sc.x - wpx / 2}px`;
-      st.top = `${sc.y - hpx / 2}px`;
-      st.width = `${wpx}px`;
-      st.height = `${hpx}px`;
-      st.transformOrigin = "50% 50%";
-      st.transform = `rotate(${(e.rotation || 0) + ts.rot}deg)`;
-      st.fontFamily = ts.stack;
-      st.fontSize = `${c.fs * k}px`;
-      st.fontWeight = String(ts.weight);
-      st.fontStyle = ts.italic ? "italic" : "normal";
-      st.color = ts.color;
-      st.textAlign = ts.align;
-      st.lineHeight = String(ts.lh);
-      st.letterSpacing = `${ts.ls * k}px`;
-      st.textTransform = ts.transform === "upper" ? "uppercase" : ts.transform === "lower" ? "lowercase" : ts.transform === "capitalize" ? "capitalize" : "none";
-      st.textDecoration = ts.deco || "none";
-      st.whiteSpace = ts.wrap ? "pre-wrap" : "pre";
-      st.overflowWrap = ts.wrap ? "anywhere" : "normal";
-      let top = pad.y;
-      if (ts.valign === "middle") top = Math.max(pad.y, (box.h - c.blockH) / 2);
-      else if (ts.valign === "bottom") top = Math.max(pad.y, box.h - pad.y - c.blockH);
-      st.padding = `${top * k}px ${pad.x * k}px 0 ${pad.x * k}px`;
-    };
-
-    const onInput = () => {
-      e.text = ta.value;
-      place();
-      requestRender();
-    };
-
-    const finish = (commit) => {
-      if (finished) return;
-      finished = true;
-      ta.removeEventListener("blur", onBlur);
-      activeEditor = null;
-      const value = ta.value;
-      ta.remove();
-      editingId = null;
-      if (commit) {
-        e.text = value;
-        if (!e.text && e.type === "text") { doc.remove([e.id]); selection.delete(e.id); }
-        else Layout.fit(e);
-        history.snapshot("text");
-      } else {
-        e.text = orig.text; e.width = orig.width; e.height = orig.height;
-        if (!orig.text && e.type === "text") { doc.remove([e.id]); selection.delete(e.id); }
-      }
-      requestRender(true);
-    };
-    const onBlur = () => finish(true);
-
-    ta.addEventListener("input", onInput);
-    ta.addEventListener("blur", onBlur);
-    ta.addEventListener("keydown", (ev) => {
-      ev.stopPropagation();
-      if (ev.key === "Escape") { ev.preventDefault(); finish(false); return; }
-      if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); ta.blur(); return; }
-      const fn = formatShortcut(ev);
-      if (fn) { ev.preventDefault(); fn(); }
-    });
-    ta.addEventListener("wheel", (ev) => ev.stopPropagation(), { passive: true });
-
-    activeEditor = { place, finish };
-    place();
-    requestRender();
-    ta.focus();
-    ta.setSelectionRange(ta.value.length, ta.value.length);
-  }
-
-  // Nhấp đúp vào phần tử để sửa chữ
-  host.addEventListener("dblclick", (ev) => {
-    if (ev.target.closest && ev.target.closest(".text-editor-overlay")) return;
-    const world = view.screenToWorld(ev.clientX, ev.clientY);
-    const hit = hitElement(world);
-    if (!hit || !TEXT_TYPES.has(hit.type)) return;
-    selection = new Set([hit.id]);
-    renderAll();
-    editTextElement(hit);
+      redrawNow();
+    },
+    up() { if (changed) { commit("scale"); redraw(); } },
+    cancel() { /* revertToHistory() khôi phục lại */ },
   });
+}
 
-  /* ============ định dạng chữ: toggle / cỡ chữ (dùng cho panel và phím tắt) ============ */
-
-  const isTextEl = (e) => TEXT_TYPES.has(e.type);
-  const textItems = () => selected().filter(isTextEl);
-
-  /** Áp dụng patch style do fn(item) trả về cho các phần tử đang chọn (đã lọc). */
-  function applyEach(fn, { label = "style", coalesce, filter } = {}) {
-    const items = filter ? selected().filter(filter) : selected();
-    if (items.length === 0) return;
-    for (const item of items) {
-      const patch = fn(item);
-      if (patch) item.style = { ...(item.style || {}), ...patch };
-      Layout.fit(item);
-    }
-    history.snapshot(label, coalesce);
-    renderAll();
-    if (activeEditor) activeEditor.place();
-  }
-  const applyStyle = (patch, coalesce, filter) => applyEach(() => patch, { coalesce, filter });
-  const applyText = (patchOrFn, coalesce) =>
-    applyEach(typeof patchOrFn === "function" ? patchOrFn : () => patchOrFn, { coalesce, filter: isTextEl });
-
-  function decoParts(s) {
-    const d = String(s?.textDecoration || "none");
-    return { u: d.includes("underline"), s: d.includes("line-through") };
-  }
-  function toggleDeco(which) {
-    const items = textItems();
-    if (items.length === 0) return;
-    const turnOn = !decoParts(items[0].style)[which];
-    applyText((item) => {
-      const p = decoParts(item.style);
-      p[which] = turnOn;
-      const parts = [];
-      if (p.u) parts.push("underline");
-      if (p.s) parts.push("line-through");
-      return { textDecoration: parts.join(" ") || "none" };
-    });
-  }
-  function toggleBold() {
-    const items = textItems();
-    if (items.length) applyText({ fontWeight: items[0].style?.fontWeight === "bold" ? "normal" : "bold" });
-  }
-  function toggleItalic() {
-    const items = textItems();
-    if (items.length) applyText({ fontStyle: items[0].style?.fontStyle === "italic" ? "normal" : "italic" });
-  }
-  /** mode "step": nhảy theo dãy cỡ chuẩn (8, 9, 10, 11, 12, 14, 16…); mode "pt": ±1. */
-  function changeFontSize(mode, dir) {
-    applyText((item) => {
-      const cur = Layout.textStyle(item).size;
-      const next = mode === "step" ? stepFontSize(cur, dir) : cur + dir;
-      return { fontSize: Math.round(clamp(next, MIN_FONT, MAX_FONT) * 10) / 10 };
-    });
-  }
-
-  /** Phím tắt định dạng giống PowerPoint. Trả về hàm thực thi hoặc null. */
-  function formatShortcut(ev) {
-    const mod = ev.ctrlKey || ev.metaKey;
-    if (!mod || ev.altKey) return null;
-    if (textItems().length === 0) return null;
-    if (ev.shiftKey) {
-      if (ev.key === ">" || ev.code === "Period") return () => changeFontSize("step", +1);
-      if (ev.key === "<" || ev.code === "Comma") return () => changeFontSize("step", -1);
-      return null;
-    }
-    const k = ev.key.toLowerCase();
-    if (k === "b") return toggleBold;
-    if (k === "i") return toggleItalic;
-    if (k === "u") return () => toggleDeco("u");
-    if (ev.key === "]") return () => changeFontSize("pt", +1);
-    if (ev.key === "[") return () => changeFontSize("pt", -1);
-    return null;
-  }
-
-  /* ============ keyboard shortcuts ============ */
-
-  window.addEventListener("keydown", (e) => {
-    if (e.target.matches("input, textarea, select")) return;
-    const mod = e.ctrlKey || e.metaKey;
-    const key = e.key.toLowerCase();
-
-    if (mod && key === "z") {
-      e.preventDefault();
-      if (e.shiftKey) redo(); else undo();
-      return;
-    }
-    if (mod && key === "y") {
-      e.preventDefault();
-      redo();
-      return;
-    }
-    if (mod && key === "s") {
-      e.preventDefault();
-      save();
-      return;
-    }
-    const fmt = formatShortcut(e);
-    if (fmt) { e.preventDefault(); fmt(); return; }
-    if (mod && key === "c") {
-      e.preventDefault();
-      copySelection();
-      return;
-    }
-    if (mod && key === "v") {
-      e.preventDefault();
-      pasteClipboard();
-      return;
-    }
-    if (mod && key === "d") {
-      e.preventDefault();
-      duplicateSelection();
-      return;
-    }
-    if (mod && key === "a") {
-      e.preventDefault();
-      selection = new Set(doc.elements.map((e0) => e0.id));
-      renderAll();
-      return;
-    }
-    if (e.key === "Delete" || e.key === "Backspace") {
-      e.preventDefault();
-      deleteSelection();
-      return;
-    }
-    if (e.key === "Escape") {
-      selection.clear();
-      setTool("select");
-      renderAll();
-      return;
-    }
-    if ((e.key === "Enter" || e.key === "F2") && selection.size === 1) {
-      const only = selected()[0];
-      if (only && TEXT_TYPES.has(only.type)) { e.preventDefault(); editTextElement(only); return; }
-    }
-    if (e.key.startsWith("Arrow") && selection.size > 0) {
-      e.preventDefault();
-      const step = e.shiftKey ? 1 : GRID;
-      let dx = 0, dy = 0;
-      if (e.key === "ArrowLeft") dx = -step;
-      if (e.key === "ArrowRight") dx = step;
-      if (e.key === "ArrowUp") dy = -step;
-      if (e.key === "ArrowDown") dy = step;
-      for (const el0 of selected()) Transform.translate(el0, dx, dy);
-      history.snapshot("nudge", "nudge");
-      renderAll();
-      return;
-    }
-
-    // Tool shortcuts
-    const map = { v: "select", h: "hand", r: "rectangle", o: "ellipse", d: "diamond", l: "line", a: "arrow", c: "connector", t: "text", n: "note", f: "frame" };
-    if (!mod && map[key]) setTool(map[key]);
-    if (!mod && key === "g" && selection.size > 0) {
-      // group
-      e.preventDefault();
-      groupSelection();
-      return;
-    }
+/* ---- xoay ---- */
+function startRotate(e) {
+  const t = byId([...selection][0]);
+  if (!t) return;
+  const [cx, cy] = elementCenter(t);
+  const startRot = t.rotation || 0;
+  const w0 = eventWorld(e);
+  const a0 = Math.atan2(w0.y - cy, w0.x - cx);
+  let changed = false;
+  host.style.cursor = "grabbing";
+  dragTracker(e, {
+    move(ev) {
+      changed = true;
+      const w = eventWorld(ev);
+      let deg = startRot + ((Math.atan2(w.y - cy, w.x - cx) - a0) * 180) / Math.PI;
+      deg = ((deg % 360) + 540) % 360 - 180;
+      if (ev.shiftKey) deg = Math.round(deg / 15) * 15;
+      else { const m = Math.round(deg / 45) * 45; if (Math.abs(deg - m) < 3) deg = m; }
+      t.rotation = round(deg, 1);
+      redrawNow();
+    },
+    up() { host.style.cursor = "default"; if (changed) { commit("rotate"); redraw(); } },
+    cancel() { host.style.cursor = "default"; },
   });
+}
 
-  /* ============ clipboard / duplicate / delete ============ */
-
-  function serializeSelection() {
-    return selected().map((e) => JSON.parse(JSON.stringify(e)));
-  }
-
-  function copySelection() {
-    if (selection.size === 0) return;
-    clipboard = serializeSelection();
-    Toast.ok(`Đã sao chép ${clipboard.length} phần tử.`);
-  }
-
-  function pasteClipboard() {
-    if (!clipboard || clipboard.length === 0) return;
-    const map = {};
-    for (const item of clipboard) {
-      const copy = doc.migrate(JSON.parse(JSON.stringify(item)));
-      copy.id = uid();
-      map[item.id] = copy.id;
-      Transform.translate(copy, GRID * 2, GRID * 2);
-      doc.add(copy);
-    }
-    // remap connector refs
-    for (const item of clipboard) {
-      const copy = doc.byId(map[item.id]);
-      if (copy?.startId && map[copy.startId]) copy.startId = map[copy.startId];
-      if (copy?.endId && map[copy.endId]) copy.endId = map[copy.endId];
-    }
-    selection = new Set(Object.values(map));
-    history.snapshot("paste");
-    renderAll();
-  }
-
-  function duplicateSelection() {
-    if (selection.size === 0) return;
-    clipboard = serializeSelection();
-    pasteClipboard();
-  }
-
-  function deleteSelection() {
-    if (selection.size === 0) return;
-    const doDelete = () => {
-      doc.remove([...selection]);
-      selection.clear();
-      history.snapshot("delete");
-      renderAll();
-    };
-    if (confirmDelete && selection.size > 3) {
-      UI.confirm({
-        title: `Xóa ${selection.size} phần tử?`,
-        message: "Các phần tử đang chọn sẽ bị xóa khỏi sơ đồ (hoàn tác được bằng Ctrl+Z).",
-        okLabel: "Xóa",
-      }).then((ok) => { if (ok) doDelete(); });
-    } else {
-      doDelete();
-    }
-  }
-
-  function groupSelection() {
-    if (selection.size < 2) return;
-    const ids = [...selection];
-    const g = { id: uid(), type: "group", x: 0, y: 0, width: 0, height: 0, children: ids, style: {} };
-    // tính bounds
-    const els = ids.map((id) => doc.byId(id)).filter(Boolean);
-    const b = doc.bounds(els);
-    if (b) { g.x = b.minX; g.y = b.minY; g.width = b.w; g.height = b.h; }
-    doc.add(g);
-    history.snapshot("group");
-    selection = new Set([g.id]);
-    renderAll();
-    Toast.ok("Đã nhóm.");
-  }
-
-  /* ============ style panel ============ */
-
-  const stylePanel = document.getElementById("stylePanel");
-  let panelSig = "";
-
-  /** Tạo phần tử DOM gọn: h("div", {class, text, onClick…}, ...con). */
-  function h(tag, props = {}, ...kids) {
-    const n = document.createElement(tag);
-    for (const [k, v] of Object.entries(props)) {
-      if (v == null || v === false) continue;
-      if (k === "class") n.className = v;
-      else if (k === "text") n.textContent = v;
-      else if (k === "style" && typeof v === "object") Object.assign(n.style, v);
-      else if (k.length > 2 && k.startsWith("on")) n.addEventListener(k.slice(2).toLowerCase(), v);
-      else if (k !== "list" && k in n) n[k] = v;
-      else n.setAttribute(k, v === true ? "" : v);
-    }
-    for (const kid of kids.flat()) if (kid != null && kid !== false) n.append(kid);
-    return n;
-  }
-
-  const toHex = (c) => {
-    if (typeof c !== "string") return null;
-    if (/^#[0-9a-f]{6}$/i.test(c)) return c.toLowerCase();
-    if (/^#[0-9a-f]{3}$/i.test(c)) return "#" + c.slice(1).split("").map((x) => x + x).join("").toLowerCase();
-    return null;
+/* ---- đường thẳng / mũi tên / đường nối ---- */
+function attachTarget(world, exceptId) {
+  return hitTest(doc, world.x, world.y, 10 / view.zoom, { only: (o) => !isPointType(o.type) && o.type !== "group" && o.id !== exceptId });
+}
+/** Cạnh để gắn: nếu con trỏ nằm sâu bên trong hình thì để tự động (undefined), gần mép thì cố định cạnh gần nhất. */
+function sideForPointer(target, w) {
+  const b = elementBox(target);
+  const [lx, ly] = rotatePoint(w.x, w.y, b.x + b.w / 2, b.y + b.h / 2, -(target.rotation || 0));
+  const edge = Math.min(Math.abs(lx - b.x), Math.abs(lx - b.x - b.w), Math.abs(ly - b.y), Math.abs(ly - b.y - b.h));
+  const inside = lx > b.x && lx < b.x + b.w && ly > b.y && ly < b.y + b.h;
+  return inside && edge > 18 / view.zoom ? undefined : nearestSide(target, w);
+}
+function startDrawLine(e, world) {
+  const def = LINE_TOOLS[tool];
+  const style = { ...DEFAULT_STYLES[def.type] };
+  if (def.route) style.route = def.route;
+  const start = def.type === "line" ? null : attachTarget(world, null);
+  const p0 = [sn(world.x, e), sn(world.y, e)];
+  const line = { id: uid(), type: def.type, x: p0[0], y: p0[1], points: [p0, [...p0]], style, text: "", rotation: 0 };
+  if (start) { line.startId = start.id; line.startSide = sideForPointer(start, world); line.points[0] = anchorPoint(start, line.startSide || nearestSide(start, world)); }
+  doc.add(line);
+  selection = new Set([line.id]);
+  startVertex(e, line, 1, true);
+}
+function startConnectFromAnchor(e, shape, side) {
+  if (!shape) return;
+  const p0 = anchorPoint(shape, side);
+  const line = {
+    id: uid(), type: "connector", x: p0[0], y: p0[1], points: [p0, [...p0]], text: "", rotation: 0,
+    style: { ...DEFAULT_STYLES.connector }, startId: shape.id, startSide: side,
   };
-
-  function mkColor(value, onInput, label) {
-    const input = h("input", { type: "color", class: "style-input", value: toHex(value) || "#000000", "aria-label": label || "Chọn màu" });
-    input.addEventListener("input", () => onInput(input.value));
-    return input;
-  }
-  function mkNum(value, min, max, step, onCommit, attrs = {}) {
-    const shown = String(round2(value));
-    const input = h("input", { type: "number", class: "style-input", min, max, step, value: shown, ...attrs });
-    input.addEventListener("change", () => {
-      const v = parseFloat(input.value);
-      if (!Number.isFinite(v)) { input.value = shown; return; }
-      onCommit(clamp(v, min, max));
-    });
-    input.addEventListener("keydown", (ev) => { ev.stopPropagation(); if (ev.key === "Enter") input.blur(); });
-    return input;
-  }
-  const collapsedSections = new Set();
-  const section = (title, ...kids) => {
-    const d = h("details", { class: "panel-section" }, h("summary", { text: title }), h("div", { class: "panel-section-body" }, ...kids));
-    d.open = !collapsedSections.has(title);
-    d.addEventListener("toggle", () => { if (d.open) collapsedSections.delete(title); else collapsedSections.add(title); });
-    return d;
-  };
-  const row = (label, ...kids) => h("div", { class: "style-row" }, label ? h("label", { text: label }) : null, ...kids);
-  const optGroup = (...btns) => h("div", { class: "style-opts" }, ...btns);
-  const optBtn = (label, active, onClick, attrs = {}) =>
-    h("button", { type: "button", class: "style-opt" + (active ? " active" : ""), "aria-pressed": active ? "true" : "false", onClick, ...attrs },
-      typeof label === "string" ? document.createTextNode(label) : label);
-  const miniField = (label, input) => h("div", { class: "mini-field" }, h("span", { text: label }), input);
-
-  function askFontName() {
-    let value = "";
-    const input = h("input", { type: "text", class: "input", maxLength: 80, placeholder: "Ví dụ: Bahnschrift, Arial Narrow…", "aria-label": "Tên phông chữ" });
-    input.addEventListener("input", () => { value = input.value; });
-    input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); UI.closeModal(null, "ok"); } });
-    const body = h("div", {},
-      h("p", { text: "Nhập đúng tên một phông đã cài trên máy. Người xem chưa cài phông này sẽ thấy phông thay thế." }),
-      input);
-    return UI.modal({
-      title: "Phông chữ khác",
-      body,
-      actions: [{ label: "Hủy", class: "btn-secondary", value: "cancel" }, { label: "Áp dụng", class: "btn-primary", value: "ok" }],
-    }).then((v) => (v === "ok" ? FontCatalog.clean(value) : ""));
-  }
-
-  function fontSelect(current, onPick) {
-    const wanted = current || FontCatalog.DEFAULT_FONT;
-    const known = FontCatalog.find(wanted);
-    const curName = known ? known.name : (FontCatalog.clean(wanted) || FontCatalog.DEFAULT_FONT);
-    const select = h("select", { class: "style-input", "aria-label": "Phông chữ" });
-    if (!known) select.append(h("option", { value: curName, text: `${curName} (tự nhập)` }));
-    for (const g of FontCatalog.groups) {
-      const og = h("optgroup", { label: g.label });
-      for (const f of g.fonts) {
-        const opt = h("option", { value: f.name, text: f.name });
-        opt.style.fontFamily = f.stack;
-        og.append(opt);
+  doc.add(line);
+  selection = new Set([line.id]);
+  startVertex(e, line, 1, true);
+}
+function startVertex(e, line, idx, isNew) {
+  if (!line) return;
+  const canAttach = line.type !== "line";
+  const isStart = idx === 0;
+  let changed = isNew;
+  dragTracker(e, {
+    move(ev) {
+      changed = true;
+      const w = eventWorld(ev);
+      const target = canAttach ? attachTarget(w, null) : null;
+      const sideKey = isStart ? "startSide" : "endSide", idKey = isStart ? "startId" : "endId";
+      if (target) {
+        line[idKey] = target.id; line[sideKey] = sideForPointer(target, w);
+        line.points[idx] = anchorPoint(target, line[sideKey] || nearestSide(target, w));
+        connectHot = { id: target.id, side: line[sideKey] };
+      } else {
+        line[idKey] = undefined; line[sideKey] = undefined;
+        let px = sn(w.x, ev), py = sn(w.y, ev);
+        if (ev.shiftKey) {
+          const o = line.points[isStart ? line.points.length - 1 : 0];
+          const dx = px - o[0], dy = py - o[1];
+          const ang = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4), len = Math.hypot(dx, dy);
+          px = o[0] + Math.cos(ang) * len; py = o[1] + Math.sin(ang) * len;
+        }
+        line.points[idx] = [px, py];
+        connectHot = null;
       }
-      select.append(og);
-    }
-    select.append(h("option", { value: "__custom__", text: "Nhập tên phông khác…" }));
-    select.value = curName;
-    select.addEventListener("change", async () => {
-      if (select.value === "__custom__") {
-        const name = await askFontName();
-        if (name) onPick(name); else select.value = curName;
+      redrawNow();
+    },
+    up() {
+      connectHot = null;
+      const a = line.points[0], b = line.points[line.points.length - 1];
+      if (isNew && Math.hypot(b[0] - a[0], b[1] - a[1]) < 6 && !line.endId) {
+        doc.remove([line.id]); selection.clear();
+        redraw(true);
         return;
       }
-      onPick(select.value);
-    });
-    return select;
-  }
+      if (changed) commit(isNew ? "draw" : "line");
+      if (isNew) afterCreate();
+      redraw(true);
+    },
+    cancel() { /* revertToHistory() khôi phục lại */ },
+  });
+  redrawNow();
+}
 
-  function setGeom(patch) {
-    const e = selected()[0];
-    if (!e || isLineType(e.type)) return;
-    if ("width" in patch) { patch.width = Math.max(8, patch.width); if (e.type === "text") e.style = { ...(e.style || {}), wrap: true }; }
-    if ("height" in patch) patch.height = Math.max(8, patch.height);
-    Object.assign(e, patch);
-    Layout.fit(e);
-    history.snapshot("geom");
-    renderAll();
-  }
-  function setRotationAbs(deg) {
-    const els = selected().filter(isRotatable);
-    for (const e of els) Transform.setRotation(e, deg);
-    history.snapshot("rotate");
-    renderAll();
-  }
+/* ---- vẽ hình ---- */
+function startDrawBox(e, world) {
+  const type = tool;
+  const s0 = { x: sn(world.x, e), y: sn(world.y, e) };
+  const shape = { id: uid(), type, x: s0.x, y: s0.y, width: 0, height: 0, text: "", rotation: 0, style: { ...(DEFAULT_STYLES[type] || {}) } };
+  doc.add(shape);
+  selection = new Set([shape.id]);
+  let dragged = false;
+  dragTracker(e, {
+    move(ev) {
+      const w = eventWorld(ev);
+      const px = sn(w.x, ev), py = sn(w.y, ev);
+      if (!dragged && Math.hypot(px - s0.x, py - s0.y) < 4) return;
+      dragged = true;
+      let dx = px - s0.x, dy = py - s0.y;
+      if (ev.shiftKey) { const m = Math.max(Math.abs(dx), Math.abs(dy)); dx = Math.sign(dx || 1) * m; dy = Math.sign(dy || 1) * m; }
+      if (ev.altKey) { shape.x = s0.x - Math.abs(dx); shape.y = s0.y - Math.abs(dy); shape.width = Math.abs(dx) * 2; shape.height = Math.abs(dy) * 2; }
+      else { shape.x = Math.min(s0.x, s0.x + dx); shape.y = Math.min(s0.y, s0.y + dy); shape.width = Math.abs(dx); shape.height = Math.abs(dy); }
+      redrawNow();
+    },
+    up() {
+      if (!dragged || shape.width < 6 || shape.height < 6) {
+        const [dw, dh] = SIZES[type] || SIZES.default;
+        shape.width = dw; shape.height = dh;
+        shape.x = sn(world.x - dw / 2, e); shape.y = sn(world.y - dh / 2, e);
+      }
+      commit("draw");
+      afterCreate();
+      redraw(true);
+    },
+  });
+  redrawNow();
+}
 
-  function renderStylePanel() {
-    const sel = selected();
-    const sig = sel.map((e) => e.id + ":" + e.type).join("|");
-    const ae = document.activeElement;
-    // Đang gõ/chọn trong panel và vẫn cùng vùng chọn → không dựng lại (giữ focus, giữ bảng chọn màu)
-    if (sig === panelSig && ae && stylePanel.contains(ae) && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName)) return;
-    panelSig = sig;
-    stylePanel.replaceChildren();
+/* ============ soạn chữ trực tiếp ============ */
 
-    if (sel.length === 0) {
-      stylePanel.append(
-        h("div", { class: "panel-empty", text: "Chọn một phần tử để chỉnh kiểu." }),
-        h("div", { class: "panel-tips" },
-          h("div", { text: "Gợi ý nhanh" }),
-          h("ul", {},
-            h("li", { text: "Nhấp đúp để sửa chữ" }),
-            h("li", { text: "Kéo núm tròn phía trên để xoay (giữ Shift: bước 15°)" }),
-            h("li", { text: "Ctrl+B / I / U: đậm / nghiêng / gạch chân" }),
-            h("li", { text: "Ctrl+Shift+< hoặc >: giảm / tăng cỡ chữ" }),
-            h("li", { text: "Ctrl+[ hoặc ]: giảm / tăng 1 điểm" }),
-            h("li", { text: "Text: kéo góc để phóng to/thu nhỏ chữ" }),
-          )));
+function createTextAt(world) {
+  const t = { id: uid(), type: "text", x: sn(world.x, null), y: sn(world.y, null), width: 0, height: 0, text: "", rotation: 0, style: { ...DEFAULT_STYLES.text } };
+  doc.add(t);
+  selection = new Set([t.id]);
+  redrawNow();
+  editText(t, true);
+}
+
+function editText(t, isNew = false) {
+  if (!t || presenting || isPointType(t.type) || MEDIA_TYPES.has(t.type) || t.type === "group") return;
+  closeEditor(true);
+  const s = t.style || {};
+  const fs = s.fontSize || (t.type === "text" ? 18 : 15);
+  const lh = lineHeightOf(fs);
+  const z = view.zoom;
+  const isFree = t.type === "text";
+  const tb = isFree ? { x: t.x + 4, y: t.y + 3, w: Math.max(t.width - 8, 160), h: t.height } : textBoxOf(t);
+  const ta = document.createElement("textarea");
+  ta.className = "text-editor-overlay";
+  ta.setAttribute("aria-label", "Nhập nội dung");
+  ta.spellcheck = false;
+  ta.value = t.text || "";
+  const tl = view.worldToScreen(tb.x, tb.y), hr = host.getBoundingClientRect();
+  const [cx, cy] = elementCenter(t);
+  const cs = view.worldToScreen(cx, cy);
+  Object.assign(ta.style, {
+    left: tl.x - hr.left + "px", top: tl.y - hr.top + "px",
+    width: tb.w * z + "px", height: Math.max(tb.h, lh) * z + "px",
+    font: `${s.fontStyle === "italic" ? "italic " : ""}${s.fontWeight === "bold" ? "700 " : "400 "}${fs * z}px/${lh * z}px ${E.FONT_FAMILIES[s.fontFamily] || E.FONT_FAMILIES.sans}`,
+    textAlign: s.textAlign || (isFree ? "left" : "center"),
+    color: Color.isNone(s.textColor) ? "inherit" : Color.toHex(Color.parse(s.textColor)),
+    transformOrigin: `${cs.x - tl.x}px ${cs.y - tl.y}px`,
+    transform: t.rotation ? `rotate(${t.rotation}deg)` : "",
+  });
+  host.appendChild(ta);
+  editing = { el: t, ta, isNew };
+  redrawNow();
+  const fitBox = () => {
+    const lines = ta.value.split("\n");
+    if (isFree) {
+      let w = 0; for (const l of lines) w = Math.max(w, TextMeasure.width(l, s, fs));
+      ta.style.width = Math.max(tb.w, w + 14) * z + "px";
+      ta.style.height = Math.max(lh, lines.length * lh) * z + "px";
+    } else {
+      const wrapped = wrapText(ta.value, s, fs, tb.w).length || 1;
+      const th = wrapped * lh;
+      const pad = t.type === "note" || t.type === "frame" ? 0 : Math.max(0, (tb.h - th) / 2);
+      ta.style.paddingTop = pad * z + "px";
+      ta.style.height = Math.max(tb.h, th) * z + "px";
+    }
+  };
+  ta.addEventListener("input", fitBox);
+  fitBox();
+  ta.focus(); ta.select();
+  ta.addEventListener("keydown", (ev) => {
+    ev.stopPropagation();
+    if (ev.key === "Escape" || (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey))) { ev.preventDefault(); closeEditor(true); }
+  });
+  ta.addEventListener("blur", () => closeEditor(true));
+  ta.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+}
+function closeEditor(save) {
+  if (!editing) return;
+  const { el: t, ta, isNew } = editing;
+  editing = null;
+  ta.removeEventListener("blur", closeEditor);
+  const value = ta.value;
+  ta.remove();
+  if (!save) { if (isNew) doc.remove([t.id]); redraw(true); return; }
+  if (t.type === "text" && value.trim() === "") { doc.remove([t.id]); selection.delete(t.id); }
+  else { t.text = value; if (t.type === "text") fitText(t); }
+  commit("text");
+  if (isNew && t.type === "text") afterCreate();
+  redraw(true);
+}
+
+view.onDouble((world) => {
+  if (presenting) return;
+  const hit = hitTest(doc, world.x, world.y, 6 / view.zoom);
+  if (!hit) {
+    if (tool === "select") { // nhấp đúp vào chỗ trống: thêm chữ
+      const t = { id: uid(), type: "text", x: sn(world.x, null), y: sn(world.y, null), width: 0, height: 0, text: "", rotation: 0, style: { ...DEFAULT_STYLES.text } };
+      doc.add(t); selection = new Set([t.id]); redrawNow(); editText(t, true);
+    }
+    return;
+  }
+  if (hit.type === "embed" || hit.type === "video") { selection = new Set([hit.id]); view.media.setInteractive(hit.id); redraw(true); return; }
+  if (hit.type === "image") { openImageDialog({ target: hit }); return; }
+  if (isPointType(hit.type)) return;
+  selection = new Set([hit.id]);
+  redrawNow();
+  editText(hit);
+});
+
+/* ============ rê chuột: viền gợi ý + con trỏ ============ */
+
+let hoverRaf = 0, lastMove = null;
+host.addEventListener("pointermove", (e) => {
+  if (e.pointerType === "touch") return;
+  lastMove = e;
+  if (hoverRaf || action || presenting) return;
+  hoverRaf = requestAnimationFrame(() => {
+    hoverRaf = 0;
+    if (action || !lastMove) return;
+    const ev = lastMove;
+    if (ev.target.closest?.("[data-handle], .ctx-bar, .canvas-hud, .text-editor-overlay")) { if (hoverId) { hoverId = null; renderOverlay(); } return; }
+    const w = eventWorld(ev);
+    const hit = hitTest(doc, w.x, w.y, 6 / view.zoom);
+    const id = hit ? doc.rootOf(hit).id : null;
+    const showable = tool === "select" || LINE_TOOLS[tool];
+    const nextHover = showable ? id : null;
+    if (nextHover !== hoverId) {
+      hoverId = nextHover;
+      renderOverlay();
+    }
+    if (tool === "select" && !spaceDown) host.style.cursor = hit ? (selection.has(id) ? "move" : "pointer") : "default";
+  });
+});
+host.addEventListener("pointerleave", () => { if (hoverId) { hoverId = null; renderOverlay(); } });
+
+/* ============ sao chép / cắt / dán / nhân bản / xóa / nhóm ============ */
+
+function snapshotForClipboard() {
+  const ids = new Set(doc.withDescendants([...selection]));
+  return doc.serialize().elements.filter((o) => ids.has(o.id));
+}
+let pasteN = 0;
+function copySelection(silent) {
+  if (!selection.size) return false;
+  clipboard = snapshotForClipboard(); pasteN = 0;
+  if (!silent) Toast.show(`Đã sao chép ${clipboard.length} phần tử`, "ok", 1400);
+  return true;
+}
+function cutSelection() { if (copySelection(true)) { deleteSelection(true); Toast.show("Đã cắt", "ok", 1200); } }
+function pasteItems(items, offset = GRID * 2) {
+  if (!items || !items.length) return;
+  const map = {};
+  for (const it of items) map[it.id] = uid();
+  const created = [];
+  for (const it of items) {
+    const c = doc.migrate({ ...JSON.parse(JSON.stringify(it)), id: map[it.id] });
+    c.x += offset; c.y += offset;
+    if (c.points) c.points = c.points.map((p) => [p[0] + offset, p[1] + offset]);
+    c.startId = c.startId && map[c.startId] ? map[c.startId] : undefined;
+    c.endId = c.endId && map[c.endId] ? map[c.endId] : undefined;
+    if (!c.startId) c.startSide = undefined;
+    if (!c.endId) c.endSide = undefined;
+    if (c.children) c.children = c.children.map((k) => map[k]).filter(Boolean);
+    doc.add(c); created.push(c);
+  }
+  const childSet = new Set(created.flatMap((c) => c.children || []));
+  selection = new Set(created.filter((c) => !childSet.has(c.id)).map((c) => c.id));
+  commit("paste");
+  redraw(true);
+}
+function pasteInternal() {
+  if (!clipboard) return false;
+  pasteItems(clipboard, GRID * 2 * ++pasteN);
+  return true;
+}
+function duplicateSelection(silent) {
+  if (!selection.size) return;
+  pasteItems(snapshotForClipboard(), silent ? 0 : GRID * 2);
+}
+function deleteSelection(force) {
+  if (!selection.size) return;
+  const run = () => {
+    if (view.media?.interactiveId && selection.has(view.media.interactiveId)) view.media.setInteractive(null);
+    doc.remove([...selection]); selection.clear(); commit("delete"); redraw(true);
+  };
+  if (!force && prefs.confirmBeforeDelete !== false && selection.size > 3) {
+    UI.confirm({ title: `Xóa ${selection.size} phần tử?`, message: "Các phần tử đang chọn sẽ bị xóa khỏi sơ đồ (có thể hoàn tác bằng Ctrl+Z).", okLabel: "Xóa" }).then((ok) => { if (ok) run(); });
+  } else run();
+}
+function groupSelection() {
+  const roots = selRoots();
+  if (roots.length < 2) return;
+  const g = doc.migrate({ id: uid(), type: "group", x: 0, y: 0, children: roots.map((r) => r.id), style: {} });
+  // nhóm đặt ngay trên phần tử trên cùng trong nhóm
+  doc.add(g);
+  selection = new Set([g.id]);
+  commit("group"); redraw(true);
+}
+function ungroupSelection() {
+  const groups = selRoots().filter((r) => r.type === "group");
+  if (!groups.length) return;
+  const next = new Set(selection);
+  for (const g of groups) { next.delete(g.id); (g.children || []).forEach((c) => next.add(c)); }
+  doc.elements = doc.elements.filter((o) => !groups.includes(o));
+  selection = next;
+  commit("ungroup"); redraw(true);
+}
+function reorder(mode) {
+  if (!selection.size) return;
+  doc.reorder([...selection], mode);
+  commit("z"); redraw();
+}
+
+/* ============ căn chỉnh / phân bổ / xoay ============ */
+
+function moveRoot(r, dx, dy) {
+  for (const o of doc.leaves([r.id]).map(byId).filter(Boolean)) {
+    o.x += dx; o.y += dy;
+    if (o.points) o.points = o.points.map((p) => [p[0] + dx, p[1] + dy]);
+  }
+}
+function alignSelection(kind) {
+  const roots = selRoots();
+  if (roots.length < 2) return;
+  const boxes = roots.map((r) => ({ r, b: worldBBox(r) }));
+  const u = { l: Math.min(...boxes.map((x) => x.b.x)), t: Math.min(...boxes.map((x) => x.b.y)), r: Math.max(...boxes.map((x) => x.b.x + x.b.w)), bt: Math.max(...boxes.map((x) => x.b.y + x.b.h)) };
+  for (const { r, b } of boxes) {
+    let dx = 0, dy = 0;
+    if (kind === "left") dx = u.l - b.x;
+    if (kind === "right") dx = u.r - (b.x + b.w);
+    if (kind === "centerH") dx = (u.l + u.r) / 2 - (b.x + b.w / 2);
+    if (kind === "top") dy = u.t - b.y;
+    if (kind === "bottom") dy = u.bt - (b.y + b.h);
+    if (kind === "middle") dy = (u.t + u.bt) / 2 - (b.y + b.h / 2);
+    moveRoot(r, dx, dy);
+  }
+  commit("align"); redraw();
+}
+function distributeSelection(axis) {
+  const roots = selRoots();
+  if (roots.length < 3) return;
+  const items = roots.map((r) => ({ r, b: worldBBox(r) })).sort((a, c) => (axis === "h" ? a.b.x - c.b.x : a.b.y - c.b.y));
+  const first = items[0].b, last = items[items.length - 1].b;
+  const span = axis === "h" ? last.x + last.w - first.x : last.y + last.h - first.y;
+  const total = items.reduce((n, i) => n + (axis === "h" ? i.b.w : i.b.h), 0);
+  const gap = (span - total) / (items.length - 1);
+  let pos = axis === "h" ? first.x : first.y;
+  for (const it of items) {
+    const cur = axis === "h" ? it.b.x : it.b.y;
+    const d = pos - cur;
+    if (axis === "h") moveRoot(it.r, d, 0); else moveRoot(it.r, 0, d);
+    pos += (axis === "h" ? it.b.w : it.b.h) + gap;
+  }
+  commit("distribute"); redraw();
+}
+function rotateBy(deg) {
+  const leaves = selLeaves().filter((o) => !isPointType(o.type));
+  if (!leaves.length) return;
+  for (const o of leaves) { o.rotation = round((((((o.rotation || 0) + deg) % 360) + 540) % 360) - 180, 1); }
+  commit("rotate"); redraw();
+}
+function resetRotation() {
+  const leaves = selLeaves().filter((o) => !isPointType(o.type) && o.rotation);
+  if (!leaves.length) return;
+  for (const o of leaves) o.rotation = 0;
+  commit("rotate"); redraw();
+}
+
+/* ============ áp kiểu ============ */
+
+function leavesWhere(pred) { return selLeaves().filter(pred); }
+const isFillable = (o) => !isPointType(o.type) && !MEDIA_TYPES.has(o.type) && o.type !== "text" && o.type !== "group";
+const isTexty = (o) => !isPointType(o.type) && !MEDIA_TYPES.has(o.type) && o.type !== "group";
+function applyStyle(patch, key, pred) {
+  const targets = leavesWhere(pred || (() => true));
+  if (!targets.length) return;
+  for (const o of targets) {
+    const next = { ...(o.style || {}), ...patch };
+    for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k];
+    o.style = next;
+    if (o.type === "text" && ("fontSize" in patch || "fontWeight" in patch || "fontStyle" in patch || "fontFamily" in patch)) fitText(o);
+  }
+  commit("style", "style:" + (key || Object.keys(patch).join(",")));
+  redraw();
+}
+function setProp(prop, value, key) {
+  for (const o of selLeaves()) o[prop] = value;
+  commit("prop", "prop:" + (key || prop));
+  redraw();
+}
+
+/* ============ chèn ảnh / video / nhúng ============ */
+
+function mediaChars() { return doc.elements.reduce((n, o) => n + (o.src && o.src.startsWith("data:") ? o.src.length : 0), 0); }
+function placeNear(w, h, at) {
+  const c = at || canvasCenterWorld();
+  const n = doc.elements.filter((o) => MEDIA_TYPES.has(o.type)).length % 6;
+  return { x: sn(c.x - w / 2 + n * 12, null), y: sn(c.y - h / 2 + n * 12, null) };
+}
+function fitSize(w, h, maxSide = 520) {
+  const k = Math.min(1, maxSide / Math.max(w, h));
+  return [Math.max(24, Math.round(w * k)), Math.max(24, Math.round(h * k))];
+}
+function addMedia(props, at) {
+  const pos = placeNear(props.width, props.height, at);
+  const o = doc.migrate({ id: uid(), x: pos.x, y: pos.y, rotation: 0, style: {}, ...props });
+  doc.add(o);
+  selection = new Set([o.id]);
+  commit("insert");
+  setTool("select");
+  redraw(true);
+  return o;
+}
+async function insertImageFile(file, at) {
+  try {
+    const r = await M.processImageFile(file);
+    if (mediaChars() + r.src.length > 9 * 1024 * 1024) { Toast.error("Ảnh tải lên trong sơ đồ đã quá nặng. Hãy dùng liên kết ảnh thay vì tải lên."); return null; }
+    const [w, h] = fitSize(r.width, r.height);
+    const o = addMedia({ type: "image", src: r.src, width: w, height: h, alt: (file.name || "").replace(/\.[^.]+$/, "").slice(0, 120), lockRatio: true }, at);
+    if (r.animated) Toast.show("Đã chèn ảnh động.", "ok", 1600);
+    return o;
+  } catch (err) { Toast.error(err.message || "Không chèn được ảnh."); return null; }
+}
+async function insertImageUrl(url, at) {
+  if (!/^https:\/\//i.test(url)) { Toast.error("Liên kết ảnh phải bắt đầu bằng https://"); return null; }
+  let size;
+  try { size = await M.loadImageSize(url); } catch { Toast.error("Không tải được ảnh từ liên kết này (có thể trang chủ chặn hoặc không phải ảnh)."); return null; }
+  const [w, h] = fitSize(size.w, size.h);
+  return addMedia({ type: "image", src: url, width: w, height: h, lockRatio: true }, at);
+}
+async function insertParsed(res, at) {
+  if (res.kind === "embed") {
+    const [w, h] = [res.size.w, res.size.h];
+    return addMedia({ type: "embed", embedUrl: res.embedUrl, provider: res.provider, title: res.title || "", width: w, height: h }, at);
+  }
+  if (res.kind === "video") {
+    const s = await M.loadVideoSize(res.src);
+    const [w, h] = fitSize(s.w, s.h, 640);
+    return addMedia({ type: "video", src: res.src, width: w, height: h, controls: true }, at);
+  }
+  return insertImageUrl(res.src, at);
+}
+
+/* ---- hộp thoại ---- */
+function el2(tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
+
+function openImageDialog({ target } = {}) {
+  const body = el2("div");
+  const tabs = el2("div", "dlg-tabs"); tabs.setAttribute("role", "tablist");
+  const tUp = el2("button", "dlg-tab", "Tải ảnh lên"); const tLink = el2("button", "dlg-tab", "Dán liên kết ảnh");
+  [tUp, tLink].forEach((t) => { t.type = "button"; t.setAttribute("role", "tab"); });
+  tabs.append(tUp, tLink);
+
+  const paneUp = el2("div");
+  const input = document.createElement("input");
+  input.type = "file"; input.accept = "image/*,.gif,.webp,.avif,.svg"; input.className = "hidden-input"; input.multiple = !target;
+  const drop = el2("div", "dropzone"); drop.tabIndex = 0; drop.setAttribute("role", "button");
+  drop.innerHTML = ICONS.upload;
+  drop.append(el2("strong", "", "Kéo ảnh vào đây hoặc bấm để chọn"), el2("small", "", "PNG, JPG, GIF (ảnh động), WebP, AVIF, SVG — ảnh tĩnh tự nén cho nhẹ"));
+  paneUp.append(drop, input);
+
+  const paneLink = el2("div");
+  const fld = el2("div", "dlg-field"); const lab = el2("label", "", "Liên kết ảnh hoặc GIF (https)");
+  const url = document.createElement("input"); url.className = "input"; url.type = "url"; url.placeholder = "https://…/anh.gif"; url.id = "imgUrl"; lab.htmlFor = "imgUrl";
+  fld.append(lab, url);
+  const prev = el2("div", "dlg-preview"); const status = el2("div", "dlg-status", "Dán liên kết đến một tệp ảnh. GIF/ảnh động vẫn chuyển động.");
+  prev.appendChild(status);
+  const go = el2("button", "btn btn-primary", target ? "Đổi ảnh" : "Chèn ảnh"); go.type = "button"; go.disabled = true;
+  paneLink.append(fld, prev, el2("div", "modal-actions"));
+  paneLink.lastChild.style.marginTop = "14px"; paneLink.lastChild.appendChild(go);
+  body.append(tabs, paneUp, paneLink);
+
+  const show = (which) => {
+    paneUp.hidden = which !== "up"; paneLink.hidden = which !== "link";
+    tUp.setAttribute("aria-selected", String(which === "up")); tLink.setAttribute("aria-selected", String(which === "link"));
+    if (which === "link") setTimeout(() => url.focus(), 30);
+  };
+  tUp.addEventListener("click", () => show("up")); tLink.addEventListener("click", () => show("link"));
+  show("up");
+
+  const finish = () => UI.closeModal(null);
+  async function handleFiles(files) {
+    const list = [...files].filter((f) => f.type.startsWith("image/") || /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(f.name));
+    if (!list.length) { Toast.error("Hãy chọn tệp ảnh."); return; }
+    finish();
+    if (target) {
+      try {
+        const r = await M.processImageFile(list[0]);
+        target.src = r.src;
+        const [w, h] = fitSize(r.width, r.height);
+        const k = (target.width || w) / w; target.height = Math.round(h * k);
+        commit("image"); view.invalidate(); redraw(true);
+      } catch (err) { Toast.error(err.message); }
       return;
     }
+    let i = 0;
+    for (const f of list) { await insertImageFile(f); i++; }
+  }
+  drop.addEventListener("click", () => input.click());
+  drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); } });
+  input.addEventListener("change", () => handleFiles(input.files));
+  ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+  ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+  drop.addEventListener("drop", (e) => handleFiles(e.dataTransfer.files));
 
-    const refText = sel.find(isTextEl);
-    const refShape = sel.find((e) => !isLineType(e.type));
-    const refLine = sel.find((e) => isLineType(e.type));
-    const e0 = sel[0];
+  let probe = 0;
+  url.addEventListener("input", async () => {
+    const v = url.value.trim(); const my = ++probe;
+    go.disabled = true; prev.replaceChildren(status);
+    if (!v) { status.className = "dlg-status"; status.textContent = "Dán liên kết đến một tệp ảnh. GIF/ảnh động vẫn chuyển động."; return; }
+    if (!/^https:\/\//i.test(v)) { status.className = "dlg-status err"; status.textContent = "Liên kết phải bắt đầu bằng https://"; return; }
+    status.className = "dlg-status"; status.textContent = "Đang kiểm tra ảnh…";
+    try {
+      const s = await M.loadImageSize(v);
+      if (my !== probe) return;
+      const im = new Image(); im.src = v; im.alt = "";
+      status.className = "dlg-status ok"; status.textContent = `Ảnh hợp lệ — ${s.w}×${s.h}px`;
+      prev.replaceChildren(im, status); go.disabled = false;
+    } catch { if (my === probe) { status.className = "dlg-status err"; status.textContent = "Không tải được ảnh. Hãy kiểm tra liên kết (cần trỏ thẳng tới tệp ảnh)."; } }
+  });
+  const run = async () => {
+    const v = url.value.trim(); if (!v || go.disabled) return;
+    finish();
+    if (target) { target.src = v; const s = await M.loadImageSize(v).catch(() => null); if (s) { const [w, h] = fitSize(s.w, s.h); target.height = Math.round((target.width || w) * (h / w)); } commit("image"); view.invalidate(); redraw(true); }
+    else await insertImageUrl(v);
+  };
+  go.addEventListener("click", run);
+  url.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); run(); } });
+  UI.modal({ title: target ? "Đổi ảnh" : "Chèn ảnh / GIF", body, wide: false, actions: [{ label: "Hủy", class: "btn-secondary", value: "cancel" }] });
+}
 
-    stylePanel.append(h("h3", { text: sel.length > 1 ? `${sel.length} phần tử` : typeLabel(e0.type) }));
+function openMediaDialog({ mode, target } = {}) {
+  const isVideo = mode === "video";
+  const body = el2("div");
+  const f = el2("div", "dlg-field");
+  const lab = el2("label", "", isVideo ? "Liên kết video hoặc mã nhúng" : "Mã nhúng (<iframe …>) hoặc liên kết");
+  const ta = document.createElement("textarea"); ta.className = "input"; ta.id = "mediaIn"; lab.htmlFor = "mediaIn"; ta.spellcheck = false; ta.rows = 4;
+  ta.placeholder = isVideo ? "https://www.youtube.com/watch?v=…   hoặc   https://…/video.mp4" : '<iframe src="https://www.youtube.com/embed/…"></iframe>   hoặc dán thẳng liên kết YouTube, Canva, Vimeo…';
+  if (target) ta.value = target.type === "video" ? target.src : target.embedUrl;
+  f.append(lab, ta);
+  const prev = el2("div", "dlg-preview"); const status = el2("div", "dlg-status", "Dán mã nhúng hoặc liên kết để Diagram tự nhận diện trình phát.");
+  prev.appendChild(status);
+  const chips = el2("div", "dlg-chips");
+  ["YouTube", "Canva", "Vimeo", "Google Slides", "Figma", "Spotify", "Loom", "TikTok", isVideo ? "MP4 / WebM" : "Mã <iframe> bất kỳ"].forEach((n) => chips.appendChild(el2("span", "", n)));
+  const acts = el2("div", "modal-actions"); acts.style.marginTop = "14px";
+  const go = el2("button", "btn btn-primary", target ? "Cập nhật" : "Chèn vào sơ đồ"); go.type = "button"; go.disabled = true;
+  acts.appendChild(go);
+  body.append(f, prev, chips, acts);
+  let parsed = null;
+  const check = () => {
+    const v = ta.value.trim(); parsed = null; go.disabled = true;
+    if (!v) { status.className = "dlg-status"; status.textContent = "Dán mã nhúng hoặc liên kết để Diagram tự nhận diện trình phát."; return; }
+    const r = M.parseMediaInput(v, embedHosts, { hostname: location.hostname });
+    if (!r.ok) { status.className = "dlg-status err"; status.textContent = r.error; return; }
+    if (target && ((target.type === "embed" && r.kind !== "embed") || (target.type === "video" && r.kind === "image"))) { status.className = "dlg-status err"; status.textContent = "Loại nội dung không khớp với phần tử đang chọn."; return; }
+    parsed = r; go.disabled = false; status.className = "dlg-status ok";
+    status.textContent = r.kind === "embed" ? `Đã nhận diện: ${r.provider} — khung ${r.size.w}×${r.size.h}` : r.kind === "video" ? "Đã nhận diện: tệp video" : "Đây là ảnh — sẽ chèn như một hình ảnh";
+  };
+  ta.addEventListener("input", check);
+  ta.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); run(); } });
+  const run = async () => {
+    if (!parsed) return;
+    UI.closeModal(null);
+    if (target) {
+      if (parsed.kind === "embed") { target.embedUrl = parsed.embedUrl; target.provider = parsed.provider; if (parsed.title) target.title = parsed.title; }
+      else if (parsed.kind === "video") target.src = parsed.src;
+      commit("media"); redraw(true);
+    } else await insertParsed(parsed);
+  };
+  go.addEventListener("click", run);
+  UI.modal({ title: target ? "Đổi liên kết" : isVideo ? "Chèn video" : "Chèn nội dung nhúng", body, actions: [{ label: "Hủy", class: "btn-secondary", value: "cancel" }] });
+  setTimeout(() => { ta.focus(); if (target) check(); }, 30);
+}
 
-    /* ---------- Chữ ---------- */
-    if (refText) {
-      const ts = Layout.textStyle(refText);
-      const plain = refText.type === "text";
-      const s = refText.style || {};
-      const dp = decoParts(s);
+/* ---- dán / thả ---- */
+document.addEventListener("paste", async (e) => {
+  if (presenting || e.target.closest?.("input, textarea, select")) return;
+  const cd = e.clipboardData; if (!cd) return;
+  const files = [...(cd.files || [])].filter((f) => f.type.startsWith("image/"));
+  if (files.length) { e.preventDefault(); for (const f of files) await insertImageFile(f); return; }
+  const text = cd.getData("text/plain");
+  if (text && (/<iframe[\s>]/i.test(text) || /^\s*https?:\/\/\S+\s*$/i.test(text))) {
+    const r = M.parseMediaInput(text, embedHosts, { hostname: location.hostname });
+    if (r.ok && (r.kind !== "image" || /\.(gif|png|jpe?g|webp|avif|svg)(\?|$)/i.test(text))) {
+      e.preventDefault(); await insertParsed(r); Toast.show("Đã chèn từ nội dung vừa dán (Ctrl+Z để hoàn tác).", "ok", 2400); return;
+    }
+    if (!r.ok && /<iframe/i.test(text)) { e.preventDefault(); Toast.error(r.error); return; }
+  }
+  if (clipboard) { e.preventDefault(); pasteInternal(); }
+});
+host.addEventListener("dragover", (e) => { if (presenting) return; e.preventDefault(); e.dataTransfer.dropEffect = "copy"; });
+host.addEventListener("drop", async (e) => {
+  if (presenting) return;
+  e.preventDefault();
+  const at = eventWorld(e);
+  const files = [...(e.dataTransfer.files || [])].filter((f) => f.type.startsWith("image/") || /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(f.name));
+  if (files.length) { for (const f of files) await insertImageFile(f, at); return; }
+  const text = e.dataTransfer.getData("text/uri-list") || e.dataTransfer.getData("text/plain");
+  if (text) { const r = M.parseMediaInput(text.split("\n")[0], embedHosts, { hostname: location.hostname }); if (r.ok) await insertParsed(r, at); else Toast.error(r.error); }
+});
 
-      const sizeInput = mkNum(ts.size, MIN_FONT, MAX_FONT, 1, (v) => applyText({ fontSize: Math.round(v * 10) / 10 }), { list: "fontSizeList", "aria-label": "Cỡ chữ" });
-      const datalist = h("datalist", { id: "fontSizeList" }, FONT_SIZE_PRESETS.map((p) => h("option", { value: String(p) })));
+/* ============ hộp phím tắt ============ */
 
-      stylePanel.append(
-        section("Chữ",
-          row("Phông chữ", fontSelect(s.fontFamily, (name) => { FontCatalog.ensure(name); applyText({ fontFamily: name }); })),
-          row("Cỡ chữ",
-            h("div", { class: "size-row" },
-              h("button", { type: "button", class: "style-opt", title: "Giảm cỡ chữ (Ctrl+Shift+<)", "aria-label": "Giảm cỡ chữ", text: "A−", onClick: () => changeFontSize("step", -1) }),
-              sizeInput,
-              h("button", { type: "button", class: "style-opt", title: "Tăng cỡ chữ (Ctrl+Shift+>)", "aria-label": "Tăng cỡ chữ", text: "A+", onClick: () => changeFontSize("step", +1) }),
-            ), datalist),
-          row("Kiểu chữ", optGroup(
-            optBtn(h("b", { text: "B" }), s.fontWeight === "bold", toggleBold, { title: "Đậm (Ctrl+B)", "aria-label": "Đậm" }),
-            optBtn(h("i", { text: "I" }), s.fontStyle === "italic", toggleItalic, { title: "Nghiêng (Ctrl+I)", "aria-label": "Nghiêng" }),
-            optBtn(h("u", { text: "U" }), dp.u, () => toggleDeco("u"), { title: "Gạch chân (Ctrl+U)", "aria-label": "Gạch chân" }),
-            optBtn(h("s", { text: "S" }), dp.s, () => toggleDeco("s"), { title: "Gạch ngang", "aria-label": "Gạch ngang" }),
-          )),
-          row("Màu chữ", mkColor(s.textColor, (v) => applyText({ textColor: v }, "textColor"), "Màu chữ")),
-          row("Căn ngang", optGroup(
-            ...[["left", "Trái"], ["center", "Giữa"], ["right", "Phải"]].map(([val, lab]) =>
-              optBtn(lab, ts.align === val, () => applyText({ textAlign: val })))
-          )),
-          row("Căn dọc", optGroup(
-            ...[["top", "Trên"], ["middle", "Giữa"], ["bottom", "Dưới"]].map(([val, lab]) =>
-              optBtn(lab, ts.valign === val, () => applyText({ verticalAlign: val })))
-          )),
-          h("div", { class: "style-cols style-row" },
-            miniField("Giãn dòng", mkNum(ts.lh, 0.8, 4, 0.05, (v) => applyText({ lineHeight: round2(v) }))),
-            miniField("Giãn chữ (px)", mkNum(ts.ls, -10, 100, 0.5, (v) => applyText({ letterSpacing: round2(v) }))),
-          ),
-          row("Kiểu chữ hoa/thường", (() => {
-            const sel2 = h("select", { class: "style-input", "aria-label": "Chữ hoa thường" },
-              ...[["none", "Bình thường"], ["upper", "CHỮ IN HOA"], ["lower", "chữ in thường"], ["capitalize", "Viết Hoa Đầu Từ"]]
-                .map(([v, t]) => h("option", { value: v, text: t })));
-            sel2.value = ts.transform;
-            sel2.addEventListener("change", () => applyText({ textTransform: sel2.value }));
-            return sel2;
-          })()),
-          row("Vừa với khung", optGroup(
-            optBtn("Không", ts.autoFit === "none", () => applyText({ autoFit: "none" }), { title: "Giữ nguyên cỡ chữ và khung" }),
-            optBtn("Thu chữ", ts.autoFit === "shrink", () => applyText({ autoFit: "shrink" }), { title: "Tự thu nhỏ chữ khi tràn khung (như PowerPoint)" }),
-            optBtn("Giãn khung", ts.autoFit === "resize", () => applyText({ autoFit: "resize" }), { title: "Tự giãn khung vừa với chữ" }),
-          )),
-          plain ? null : row("Xoay chữ trong khung",
-            h("div", { class: "size-row" },
-              mkNum(ts.rot, -360, 360, 1, (v) => applyText({ textRotation: v }), { "aria-label": "Góc xoay chữ (độ)" }),
-              h("button", { type: "button", class: "style-opt", text: "↺ 90°", title: "Xoay chữ 90° ngược chiều kim đồng hồ", onClick: () => applyText((it) => ({ textRotation: normAngle((+it.style?.textRotation || 0) - 90) })) }),
-              h("button", { type: "button", class: "style-opt", text: "↻ 90°", title: "Xoay chữ 90° theo chiều kim đồng hồ", onClick: () => applyText((it) => ({ textRotation: normAngle((+it.style?.textRotation || 0) + 90) })) }),
-            ),
-            optGroup(optBtn("Đặt lại góc chữ", false, () => applyText({ textRotation: 0 }))),
-          ),
-        ),
+function showShortcuts() {
+  const rows = [
+    ["V / H", "Chọn / kéo canvas (hoặc giữ Space)"], ["R, O, D", "Chữ nhật, ellipse, hình thoi"], ["L, A, C", "Đường thẳng, mũi tên, đường nối"],
+    ["T, N, F", "Văn bản, ghi chú, khung"], ["I, E", "Chèn ảnh, chèn nhúng"], ["Ctrl+Z / Ctrl+Shift+Z", "Hoàn tác / làm lại"],
+    ["Ctrl+C, X, V, D", "Sao chép, cắt, dán, nhân bản"], ["Ctrl+G / Ctrl+Shift+G", "Nhóm / bỏ nhóm"], ["Ctrl+] / Ctrl+[", "Lên / xuống một lớp"],
+    ["Mũi tên", "Dịch chuyển (Shift = 1px)"], ["Shift khi kéo", "Giữ tỉ lệ / góc 45°"], ["Alt khi kéo", "Tắt bắt dính / nhân bản khi di chuyển"],
+    ["+ / − / Shift+1", "Phóng to / thu nhỏ / vừa khung"], ["P", "Trình chiếu toàn màn hình"], ["Nhấp đúp", "Sửa chữ · bấm vào video/nhúng · đổi ảnh"],
+  ];
+  const t = el2("div"); t.style.cssText = "display:grid;grid-template-columns:max-content 1fr;gap:8px 18px;font-size:13.5px;";
+  for (const [k, d] of rows) { const kk = el2("kbd", "", k); kk.style.cssText = "font:600 12px var(--mono);background:var(--bg-soft);border:1px solid var(--border);border-radius:6px;padding:2px 8px;white-space:nowrap;"; t.append(kk, el2("span", "", d)); }
+  UI.modal({ title: "Phím tắt", body: t, wide: true, actions: [{ label: "Đóng", class: "btn-primary", value: "close" }] });
+}
+
+/* ============ bảng thuộc tính ============ */
+
+const panel = $("stylePanel");
+let syncers = [];
+
+function sec(title) { const s = el2("div", "sp-sec"); if (title) s.appendChild(el2("div", "sp-title", title)); return s; }
+function row(label, ...ctl) {
+  const r = el2("div", "sp-row"); r.appendChild(el2("label", "", label));
+  const c = el2("div", "sp-ctl"); c.append(...ctl); r.appendChild(c); return r;
+}
+function numField({ get, set, min = -1e6, max = 1e6, step = 1, unit = "", dec = 0, label }) {
+  const wrap = el2("div", "sp-unit");
+  if (unit) wrap.appendChild(el2("span", "", unit));
+  const inp = document.createElement("input");
+  inp.type = "number"; inp.className = "sp-input"; inp.step = String(step); inp.min = String(min); inp.max = String(max);
+  if (label) inp.setAttribute("aria-label", label);
+  if (!unit) inp.style.paddingLeft = "9px";
+  inp.addEventListener("input", () => { const v = parseFloat(inp.value); if (Number.isFinite(v)) set(clamp(v, min, max)); });
+  inp.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") inp.blur(); });
+  inp.addEventListener("blur", () => sync());
+  const sync = () => { if (document.activeElement !== inp) { const v = get(); inp.value = v == null ? "" : String(round(v, dec)); } };
+  syncers.push(sync); sync();
+  wrap.appendChild(inp);
+  return wrap;
+}
+function segField(options, get, set, { multi = false } = {}) {
+  const g = el2("div", "seg"); g.setAttribute("role", "group");
+  const btns = options.map((o) => {
+    const b = document.createElement("button"); b.type = "button";
+    if (o.icon) b.innerHTML = o.icon; else b.textContent = o.label;
+    b.title = o.title || o.label || ""; b.setAttribute("aria-label", o.title || o.label || "");
+    b.addEventListener("click", () => set(o.v, get()));
+    g.appendChild(b); return [b, o];
+  });
+  const sync = () => { const cur = get(); for (const [b, o] of btns) b.setAttribute("aria-pressed", String(multi ? !!o.on?.(cur) : cur === o.v)); };
+  syncers.push(sync); sync();
+  return g;
+}
+function checkField(label, get, set) {
+  const l = el2("label", "sp-check"); const c = document.createElement("input"); c.type = "checkbox";
+  c.addEventListener("change", () => set(c.checked));
+  l.append(c, document.createTextNode(label));
+  const sync = () => { c.checked = !!get(); };
+  syncers.push(sync); sync(); return l;
+}
+function colorField(label, get, set, { allowNone = true } = {}) {
+  const f = CP.field({ value: get(), allowNone, label, getDocColors: docColors, onChange: (v) => set(v) });
+  syncers.push(() => f.setValue(get()));
+  return f;
+}
+function btnField(icon, label, fn, cls = "") {
+  const b = document.createElement("button"); b.type = "button"; b.className = "sp-btn " + cls; b.innerHTML = icon;
+  b.appendChild(document.createTextNode(label)); b.addEventListener("click", fn); return b;
+}
+/** "auto" (màu chữ theo giao diện) → màu thực đang hiển thị, để ô màu hiện đúng. */
+const resolveInk = (v) => (v === "auto" ? (getComputedStyle(document.documentElement).getPropertyValue("--canvas-ink").trim() || "#1f2430") : v);
+const first = (pred) => selLeaves().find(pred);
+const sv = (pred, key, dflt) => { const o = first(pred); return o && o.style && o.style[key] !== undefined ? o.style[key] : dflt; };
+
+function buildPanel() {
+  panel.replaceChildren(); syncers = [];
+  const roots = selRoots();
+  if (!roots.length) {
+    const d = el2("div", "panel-empty");
+    d.append(el2("b", "", "Chưa chọn phần tử nào"), document.createTextNode("Bấm vào một hình để chỉnh màu, chữ, kích thước. Kéo trên vùng trống để chọn nhiều phần tử."));
+    panel.appendChild(d);
+    const s = sec("Mẹo");
+    for (const t of ["Nhấp đúp vào hình để gõ chữ.", "Kéo từ chấm xanh quanh hình để nối sang hình khác.", "Dán liên kết YouTube/Canva (Ctrl+V) để chèn trình phát.", "Giữ Space rồi kéo để di chuyển khung vẽ."]) s.appendChild(el2("p", "sp-note", "• " + t));
+    panel.appendChild(s);
+    const cnt = el2("p", "sp-note", "");
+    const upd = () => { cnt.textContent = `Sơ đồ có ${doc.elements.filter((o) => o.type !== "group").length} phần tử.`; };
+    syncers.push(upd); upd();
+    panel.appendChild(cnt);
+    return;
+  }
+  const leaves = selLeaves();
+  const single = roots.length === 1 ? roots[0] : null;
+  const head = el2("div", "sp-head");
+  const ico = el2("div", "sp-ico"); ico.innerHTML = single ? iconFor(single.type) : ICONS.layers;
+  const ht = el2("div"); const h3 = el2("h3", "", single ? typeLabel(single.type) : `${roots.length} phần tử`);
+  const sm = el2("small", "", single ? (single.type === "group" ? `${(single.children || []).length} phần tử trong nhóm` : (single.provider || "")) : "Chỉnh chung cho tất cả"); h3.appendChild(sm); ht.appendChild(h3);
+  head.append(ico, ht); panel.appendChild(head);
+
+  const has = {
+    fill: leaves.some(isFillable), line: leaves.some((o) => isPointType(o.type)), text: leaves.some(isTexty),
+    media: leaves.some((o) => MEDIA_TYPES.has(o.type)), round: leaves.some((o) => ["rectangle", "rounded-rectangle", "note", "frame", "video", "embed"].includes(o.type)),
+  };
+
+  /* --- Phương tiện --- */
+  if (single && MEDIA_TYPES.has(single.type)) {
+    const s = sec("Nội dung");
+    if (single.type === "embed") {
+      const url = document.createElement("input"); url.className = "sp-input"; url.readOnly = true; url.value = single.embedUrl || ""; url.setAttribute("aria-label", "Liên kết nhúng"); url.title = single.embedUrl || "";
+      const col = el2("div", "sp-col"); col.appendChild(url);
+      const bs = el2("div", "sp-btns");
+      bs.append(btnField(ICONS.interact, "Bấm vào trình phát", () => { view.media.setInteractive(view.media.interactiveId === single.id ? null : single.id); }),
+        btnField(ICONS.link, "Đổi liên kết", () => openMediaDialog({ mode: "embed", target: single })));
+      s.append(col, bs, el2("p", "sp-note", "Kéo để di chuyển, dùng tay nắm để đổi cỡ và xoay. Nhấp đúp để bấm vào trình phát; Esc để thoát."));
+    } else if (single.type === "video") {
+      const bs = el2("div", "sp-btns"); bs.appendChild(btnField(ICONS.link, "Đổi liên kết", () => openMediaDialog({ mode: "video", target: single })));
+      s.append(bs, el2("div", "sp-col"));
+      for (const [k, lab] of [["controls", "Hiện nút điều khiển"], ["loop", "Lặp lại"], ["muted", "Tắt tiếng"], ["autoplay", "Tự phát khi xem (tắt tiếng)"]]) {
+        s.appendChild(checkField(lab, () => (k === "controls" ? single.controls !== false : !!single[k]), (v) => { single[k] = v; commit("media", "media:" + k); redraw(); }));
+      }
+    } else {
+      const col = el2("div", "sp-col"); col.appendChild(el2("label", "", "Mô tả ảnh (cho người dùng đọc màn hình)"));
+      const alt = document.createElement("input"); alt.className = "sp-input"; alt.maxLength = 300; alt.value = single.alt || "";
+      alt.addEventListener("input", () => { single.alt = alt.value; commit("alt", "alt"); });
+      alt.addEventListener("keydown", (e) => e.stopPropagation());
+      col.appendChild(alt);
+      const bs = el2("div", "sp-btns"); bs.appendChild(btnField(ICONS.image, "Đổi ảnh", () => openImageDialog({ target: single })));
+      s.append(col, checkField("Giữ tỉ lệ khi đổi cỡ", () => single.lockRatio !== false, (v) => { single.lockRatio = v; commit("lock", "lock"); redraw(true); }), bs);
+    }
+    panel.appendChild(s);
+  }
+
+  /* --- Hình dạng --- */
+  if (has.fill) {
+    const s = sec("Hình dạng");
+    s.appendChild(row("Màu nền", colorField("Màu nền", () => sv(isFillable, "fill", "none"), (v) => applyStyle({ fill: v }, "fill", isFillable))));
+    s.appendChild(row("Viền", colorField("Màu viền", () => sv(isFillable, "stroke", "none"), (v) => applyStyle({ stroke: v }, "stroke", isFillable))));
+    s.appendChild(row("Độ dày", numField({ get: () => sv(isFillable, "strokeWidth", 2), set: (v) => applyStyle({ strokeWidth: v }, "sw", isFillable), min: 0, max: 24, step: 0.5, dec: 1, label: "Độ dày viền" })));
+    s.appendChild(row("Kiểu viền", segField([{ v: "solid", label: "Liền" }, { v: "dashed", label: "Gạch" }, { v: "dotted", label: "Chấm" }], () => sv(isFillable, "lineType", "solid"), (v) => applyStyle({ lineType: v }, "lt", isFillable))));
+    if (has.round) s.appendChild(row("Bo góc", numField({ get: () => sv((o) => ["rectangle", "rounded-rectangle", "note", "frame", "video", "embed"].includes(o.type), "radius", 0), set: (v) => applyStyle({ radius: v }, "radius", (o) => ["rectangle", "rounded-rectangle", "note", "frame"].includes(o.type)), min: 0, max: 200, label: "Bo góc" })));
+    panel.appendChild(s);
+  }
+  if (has.media && !has.fill) {
+    const s = sec("Khung");
+    if (leaves.some((o) => o.type === "video" || o.type === "embed")) s.appendChild(row("Bo góc", numField({ get: () => sv((o) => o.type === "video" || o.type === "embed", "radius", 0), set: (v) => applyStyle({ radius: v }, "radius", (o) => o.type === "video" || o.type === "embed"), min: 0, max: 80, label: "Bo góc" })));
+    panel.appendChild(s);
+  }
+
+  /* --- Đường --- */
+  if (has.line) {
+    const isL = (o) => isPointType(o.type);
+    const s = sec("Đường");
+    s.appendChild(row("Màu", colorField("Màu đường", () => sv(isL, "stroke", "#475569"), (v) => applyStyle({ stroke: v }, "lstroke", isL), { allowNone: false })));
+    s.appendChild(row("Độ dày", numField({ get: () => sv(isL, "strokeWidth", 2), set: (v) => applyStyle({ strokeWidth: v }, "lsw", isL), min: 0.5, max: 24, step: 0.5, dec: 1, label: "Độ dày đường" })));
+    s.appendChild(row("Kiểu nét", segField([{ v: "solid", label: "Liền" }, { v: "dashed", label: "Gạch" }, { v: "dotted", label: "Chấm" }], () => sv(isL, "lineType", "solid"), (v) => applyStyle({ lineType: v }, "llt", isL))));
+    s.appendChild(row("Đường đi", segField([{ v: "straight", icon: ICONS.straight, title: "Thẳng" }, { v: "elbow", icon: ICONS.elbow, title: "Gấp khúc" }, { v: "curve", icon: ICONS.curve, title: "Cong" }],
+      () => sv(isL, "route", "straight"), (v) => applyStyle({ route: v }, "route", isL))));
+    const heads = [{ v: "none", label: "Không" }, { v: "arrow", label: "Mở" }, { v: "triangle", label: "Đặc" }];
+    s.appendChild(row("Đầu", segField(heads, () => sv(isL, "arrowStart", "none"), (v) => applyStyle({ arrowStart: v }, "as", isL))));
+    s.appendChild(row("Cuối", segField(heads, () => sv(isL, "arrowEnd", "none"), (v) => applyStyle({ arrowEnd: v }, "ae", isL))));
+    panel.appendChild(s);
+  }
+
+  /* --- Chữ --- */
+  if (has.text) {
+    const s = sec("Chữ");
+    if (single && isTexty(single)) {
+      const ta = document.createElement("textarea"); ta.className = "sp-textarea"; ta.value = single.text || ""; ta.setAttribute("aria-label", "Nội dung chữ"); ta.placeholder = "Nội dung…";
+      ta.addEventListener("input", () => { single.text = ta.value; if (single.type === "text") fitText(single); commit("text", "text"); redraw(); });
+      ta.addEventListener("keydown", (e) => e.stopPropagation());
+      syncers.push(() => { if (document.activeElement !== ta) ta.value = single.text || ""; });
+      const col = el2("div", "sp-col"); col.appendChild(ta); s.appendChild(col);
+    }
+    s.appendChild(row("Phông", segField([{ v: "sans", label: "Sans" }, { v: "serif", label: "Serif" }, { v: "mono", label: "Mono" }], () => sv(isTexty, "fontFamily", "sans"), (v) => applyStyle({ fontFamily: v }, "ff", isTexty))));
+    s.appendChild(row("Cỡ chữ", numField({ get: () => sv(isTexty, "fontSize", 15), set: (v) => applyStyle({ fontSize: v }, "fs", isTexty), min: 6, max: 200, label: "Cỡ chữ", unit: "px" })));
+    s.appendChild(row("Kiểu", segField([
+      { icon: ICONS.bold, title: "Đậm", on: (c) => c.b }, { icon: ICONS.italic, title: "Nghiêng", on: (c) => c.i }, { icon: ICONS.underline, title: "Gạch chân", on: (c) => c.u },
+    ], () => ({ b: sv(isTexty, "fontWeight", "") === "bold", i: sv(isTexty, "fontStyle", "") === "italic", u: sv(isTexty, "textDecoration", "") === "underline" }),
+    (_v, c) => { /* được xử lý bên dưới */ }, { multi: true })));
+    // gắn xử lý riêng cho 3 nút B/I/U (segField gọi set với v === undefined)
+    const seg = s.lastChild.querySelector(".seg");
+    const [bB, bI, bU] = seg.querySelectorAll("button");
+    bB.onclick = () => applyStyle({ fontWeight: sv(isTexty, "fontWeight", "") === "bold" ? "normal" : "bold" }, "fw", isTexty);
+    bI.onclick = () => applyStyle({ fontStyle: sv(isTexty, "fontStyle", "") === "italic" ? "normal" : "italic" }, "fi", isTexty);
+    bU.onclick = () => applyStyle({ textDecoration: sv(isTexty, "textDecoration", "") === "underline" ? "none" : "underline" }, "fu", isTexty);
+    s.appendChild(row("Căn lề", segField([{ v: "left", icon: ICONS.textLeft, title: "Trái" }, { v: "center", icon: ICONS.textCenter, title: "Giữa" }, { v: "right", icon: ICONS.textRight, title: "Phải" }],
+      () => sv(isTexty, "textAlign", "center"), (v) => applyStyle({ textAlign: v }, "ta", isTexty))));
+    s.appendChild(row("Màu chữ", colorField("Màu chữ", () => resolveInk(sv(isTexty, "textColor", "#1f2430")), (v) => applyStyle({ textColor: v }, "tc", isTexty), { allowNone: false })));
+    panel.appendChild(s);
+  }
+
+  /* --- Vị trí & kích thước --- */
+  if (single && single.type !== "group" && !isPointType(single.type)) {
+    const s = sec("Vị trí & kích thước");
+    const ratioLocked = () => single.type === "image" && single.lockRatio !== false;
+    const g = el2("div"); g.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:8px;";
+    const mkN = (lab, get, set, o = {}) => numField({ get, set, label: lab, unit: lab, dec: 0, ...o });
+    g.append(
+      mkN("X", () => single.x, (v) => { single.x = v; commit("geo", "geo:x"); redraw(); }),
+      mkN("Y", () => single.y, (v) => { single.y = v; commit("geo", "geo:y"); redraw(); }),
+      mkN("W", () => single.width, (v) => { const r = single.width / (single.height || 1); single.width = v; if (ratioLocked()) single.height = Math.max(4, v / r); if (single.type === "text") single.type = "text"; commit("geo", "geo:w"); redraw(); }, { min: 4 }),
+      mkN("H", () => single.height, (v) => { const r = single.width / (single.height || 1); single.height = v; if (ratioLocked()) single.width = Math.max(4, v * r); commit("geo", "geo:h"); redraw(); }, { min: 4 }),
+    );
+    if (single.type === "text") { g.children[2].style.display = "none"; g.children[3].style.display = "none"; }
+    s.appendChild(g);
+    const rr = row("Xoay", numField({ get: () => single.rotation || 0, set: (v) => { single.rotation = v; commit("geo", "geo:r"); redraw(); }, min: -360, max: 360, unit: "°", dec: 1, label: "Góc xoay" }));
+    rr.style.marginTop = "8px"; rr.querySelector(".sp-ctl").appendChild(btnField(ICONS.reset, "0°", () => resetRotation()));
+    s.appendChild(rr);
+    panel.appendChild(s);
+  }
+
+  /* --- Hiển thị --- */
+  const sA = sec("Hiển thị");
+  sA.appendChild(row("Độ mờ", (() => {
+    const w = el2("div", "sp-ctl"); w.style.cssText = "display:flex;gap:8px;align-items:center;flex:1;";
+    const r = document.createElement("input"); r.type = "range"; r.min = "5"; r.max = "100"; r.className = "sp-range"; r.setAttribute("aria-label", "Độ mờ");
+    const v = el2("span", "sp-val", "");
+    r.addEventListener("input", () => { applyStyle({ opacity: +r.value >= 100 ? undefined : +r.value / 100 }, "op"); v.textContent = r.value + "%"; });
+    const sync = () => { const o = sv(() => true, "opacity", 1); r.value = String(Math.round(o * 100)); v.textContent = r.value + "%"; };
+    syncers.push(sync); sync(); w.append(r, v); return w;
+  })()));
+  if (leaves.some((o) => !isPointType(o.type) && o.type !== "text")) sA.appendChild(checkField("Đổ bóng", () => sv((o) => !isPointType(o.type), "shadow", false), (v) => applyStyle({ shadow: v ? true : undefined }, "shadow", (o) => !isPointType(o.type))));
+  panel.appendChild(sA);
+
+  /* --- Sắp xếp --- */
+  const sB = sec("Sắp xếp");
+  const bs = el2("div", "sp-btns");
+  bs.append(btnField(ICONS.front, "Lên đầu", () => reorder("front")), btnField(ICONS.forward, "Lên 1", () => reorder("forward")), btnField(ICONS.backward, "Xuống 1", () => reorder("backward")), btnField(ICONS.back, "Xuống cuối", () => reorder("back")));
+  sB.appendChild(bs);
+  const bs2 = el2("div", "sp-btns"); bs2.style.marginTop = "6px";
+  bs2.append(btnField(ICONS.duplicate, "Nhân bản", () => duplicateSelection()), btnField(ICONS.trash, "Xóa", () => deleteSelection(), ""));
+  if (roots.length > 1) bs2.prepend(btnField(ICONS.group, "Nhóm", () => groupSelection()));
+  if (roots.some((r) => r.type === "group")) bs2.prepend(btnField(ICONS.ungroup, "Bỏ nhóm", () => ungroupSelection()));
+  sB.appendChild(bs2);
+  panel.appendChild(sB);
+}
+function syncPanel() {
+  const sig = [...selection].join(",") + "|" + selLeaves().map((o) => o.type + (o.lockRatio === false ? "u" : "") ).join(",") + "|" + (view.media?.interactiveId || "");
+  if (sig !== panelSig) {
+    if (CP.isOpen() && panelSig) return;                  // đang chọn màu: không dựng lại panel
+    panelSig = sig; buildPanel(); return;
+  }
+  for (const f of syncers) f();
+}
+
+/* ============ ribbon kiểu PowerPoint ============ */
+
+const ribbonTabs = $("ribbonTabs"), ribbonBody = $("ribbonBody");
+let refreshers = [];
+let activeTab = (() => { try { return localStorage.getItem("diagram-ribbon-tab") || "home"; } catch { return "home"; } })();
+
+function rbBtn({ icon, label, tip, onClick, kind = "big", pressed, disabled }) {
+  const b = document.createElement("button"); b.type = "button";
+  b.className = "rb-btn" + (kind === "sm" ? " sm" : kind === "wide" ? " wide" : "");
+  b.innerHTML = icon;
+  if (kind !== "sm" && label) b.appendChild(el2("span", "", label));
+  b.setAttribute("aria-label", tip || label || ""); b.title = tip || label || "";
+  b.addEventListener("click", (e) => onClick(e, b));
+  if (pressed) refreshers.push(() => b.setAttribute("aria-pressed", String(!!pressed())));
+  if (disabled) refreshers.push(() => { b.disabled = !!disabled(); });
+  return b;
+}
+function rbGroup(label, items, wrap = false) {
+  const g = el2("div", "rb-group"); const it = el2("div", "rb-items" + (wrap ? " wrap" : "")); it.append(...items);
+  g.append(it, el2("div", "rb-label", label)); return g;
+}
+function toolBtn(id, icon, label, kind = "big", tip) {
+  const b = rbBtn({ icon, label, kind, tip: tip || label, onClick: (e) => setTool(tool === id && id !== "select" ? "select" : id, e.shiftKey), pressed: () => tool === id });
+  b.addEventListener("dblclick", () => setTool(id, true));
+  return b;
+}
+const hasSel = () => selection.size > 0;
+const multiSel = () => selection.size > 1;
+const hasLeaves = () => selection.size > 0;
+
+function shapeThumb(type) {
+  const w = 24, h = 18, x = 3, y = 6;
+  let inner;
+  if (type === "rectangle") inner = `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="1.5"/>`;
+  else if (type === "rounded-rectangle") inner = `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="6"/>`;
+  else if (type === "ellipse") inner = `<ellipse cx="15" cy="15" rx="12" ry="9"/>`;
+  else inner = `<path d="${SHAPES[type]?.path ? SHAPES[type].path(x, y - 1, w, h + 2) : ""}"/>`;
+  return `<svg viewBox="0 0 30 30" fill="currentColor" fill-opacity=".14" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
+}
+let openMenu = null;
+function closeMenu() { if (openMenu) { openMenu.remove(); openMenu = null; document.removeEventListener("pointerdown", onMenuOutside, true); } }
+function onMenuOutside(e) { if (openMenu && !openMenu.contains(e.target) && !e.target.closest?.("[data-gallery]")) closeMenu(); }
+function openShapeGallery(anchor) {
+  if (openMenu) { closeMenu(); return; }
+  const m = el2("div", "pop-menu"); m.setAttribute("role", "menu");
+  for (const grp of SHAPE_GROUPS) {
+    m.appendChild(el2("div", "pop-title", grp.label));
+    const grid = el2("div", "shape-grid");
+    for (const [type, def] of Object.entries(SHAPES)) {
+      if (def.group !== grp.id) continue;
+      const b = document.createElement("button"); b.type = "button"; b.className = "shape-item"; b.title = def.label; b.setAttribute("aria-label", def.label); b.innerHTML = shapeThumb(type);
+      b.addEventListener("click", (e) => { closeMenu(); setTool(type, e.shiftKey); });
+      grid.appendChild(b);
+    }
+    m.appendChild(grid);
+  }
+  document.body.appendChild(m); openMenu = m;
+  const r = anchor.getBoundingClientRect();
+  m.style.left = clamp(r.left, 8, window.innerWidth - m.offsetWidth - 8) + "px";
+  m.style.top = Math.min(r.bottom + 6, window.innerHeight - m.offsetHeight - 8) + "px";
+  document.addEventListener("pointerdown", onMenuOutside, true);
+}
+
+const QUICK_SHAPES = ["rectangle", "rounded-rectangle", "ellipse", "diamond", "triangle", "hexagon", "star", "cylinder"];
+const TABS = [
+  { id: "home", label: "Trang chủ", build: () => [
+    rbGroup("Bảng nhớ tạm", [
+      rbBtn({ icon: ICONS.paste, label: "Dán", tip: "Dán (Ctrl+V)", onClick: () => { if (!pasteInternal()) Toast.show("Chưa có gì để dán. Hãy sao chép một phần tử trước.", "info", 2200); } }),
+      el2("div", "rb-items wrap", ""),
+    ]),
+    rbGroup("Công cụ", [toolBtn("select", ICONS.select, "Chọn", "big", "Chọn (V)"), toolBtn("hand", ICONS.hand, "Kéo khung", "big", "Kéo khung vẽ (H hoặc giữ Space)")]),
+    rbGroup("Vẽ nhanh", [
+      toolBtn("rectangle", ICONS.rect, "", "sm", "Chữ nhật (R)"), toolBtn("ellipse", ICONS.circle, "", "sm", "Ellipse (O)"), toolBtn("diamond", ICONS.diamond, "", "sm", "Hình thoi (D)"),
+      toolBtn("arrow", ICONS.arrow, "", "sm", "Mũi tên (A)"), toolBtn("text", ICONS.text, "", "sm", "Văn bản (T)"),
+    ], true),
+    rbGroup("Chỉnh sửa", [
+      rbBtn({ icon: ICONS.duplicate, label: "Nhân bản", tip: "Nhân bản (Ctrl+D)", onClick: () => duplicateSelection(), disabled: () => !hasSel() }),
+      rbBtn({ icon: ICONS.trash, label: "Xóa", tip: "Xóa (Delete)", onClick: () => deleteSelection(), disabled: () => !hasSel() }),
+    ]),
+  ].map((g, i) => {
+    if (i === 0) {
+      const box = g.querySelector(".rb-items.wrap");
+      box.append(
+        rbBtn({ icon: ICONS.copy, label: "Sao chép", tip: "Sao chép (Ctrl+C)", kind: "wide", onClick: () => copySelection(), disabled: () => !hasSel() }),
+        rbBtn({ icon: ICONS.edit, label: "Cắt", tip: "Cắt (Ctrl+X)", kind: "wide", onClick: () => cutSelection(), disabled: () => !hasSel() }),
       );
     }
+    return g;
+  }) },
+  { id: "insert", label: "Chèn", build: () => [
+    rbGroup("Hình khối", [
+      (() => { const w = el2("div", "rb-items wrap"); w.style.maxWidth = "176px"; for (const t of QUICK_SHAPES) w.appendChild(toolBtn(t, shapeThumb(t), "", "sm", SHAPES[t].label)); return w; })(),
+      (() => { const b = rbBtn({ icon: ICONS.shapes, label: "Tất cả hình", tip: "Mở thư viện hình khối", onClick: (e, btn) => openShapeGallery(btn) }); b.dataset.gallery = "1"; const c = el2("span", "caret"); c.innerHTML = ICONS.chevronDown; b.appendChild(c); return b; })(),
+    ]),
+    rbGroup("Đường & nối", [
+      toolBtn("line", ICONS.line, "Đường", "big", "Đường thẳng (L)"), toolBtn("arrow", ICONS.arrow, "Mũi tên", "big", "Mũi tên (A)"),
+      toolBtn("conn-elbow", ICONS.elbow, "Gấp khúc", "big", "Đường nối gấp khúc (C) — tự bám vào hình"),
+      toolBtn("conn-curve", ICONS.curve, "Cong", "big", "Đường nối cong"), toolBtn("conn-straight", ICONS.straight, "Nối thẳng", "big", "Đường nối thẳng"),
+    ]),
+    rbGroup("Văn bản", [toolBtn("text", ICONS.text, "Chữ", "big", "Hộp văn bản (T)"), toolBtn("note", ICONS.note, "Ghi chú", "big", "Ghi chú dán (N)"), toolBtn("frame", ICONS.frame, "Khung", "big", "Khung nhóm (F)")]),
+    rbGroup("Phương tiện", [
+      rbBtn({ icon: ICONS.image, label: "Ảnh / GIF", tip: "Chèn ảnh hoặc GIF (I)", onClick: () => openImageDialog() }),
+      rbBtn({ icon: ICONS.video, label: "Video", tip: "Chèn video (liên kết YouTube, MP4…)", onClick: () => openMediaDialog({ mode: "video" }) }),
+      rbBtn({ icon: ICONS.embed, label: "Nhúng", tip: "Nhúng bằng mã <iframe> hoặc liên kết (E)", onClick: () => openMediaDialog({ mode: "embed" }) }),
+    ]),
+  ] },
+  { id: "arrange", label: "Sắp xếp", build: () => [
+    rbGroup("Thứ tự lớp", [
+      rbBtn({ icon: ICONS.front, label: "Lên đầu", onClick: () => reorder("front"), disabled: () => !hasSel() }), rbBtn({ icon: ICONS.forward, label: "Lên một lớp", tip: "Lên một lớp (Ctrl+])", onClick: () => reorder("forward"), disabled: () => !hasSel() }),
+      rbBtn({ icon: ICONS.backward, label: "Xuống một lớp", tip: "Xuống một lớp (Ctrl+[)", onClick: () => reorder("backward"), disabled: () => !hasSel() }), rbBtn({ icon: ICONS.back, label: "Xuống cuối", onClick: () => reorder("back"), disabled: () => !hasSel() }),
+    ]),
+    rbGroup("Nhóm", [
+      rbBtn({ icon: ICONS.group, label: "Nhóm", tip: "Nhóm (Ctrl+G)", onClick: () => groupSelection(), disabled: () => !multiSel() }),
+      rbBtn({ icon: ICONS.ungroup, label: "Bỏ nhóm", tip: "Bỏ nhóm (Ctrl+Shift+G)", onClick: () => ungroupSelection(), disabled: () => !selRoots().some((r) => r.type === "group") }),
+    ]),
+    rbGroup("Căn chỉnh (chọn 2+)", [
+      ...[["left", ICONS.alignLeft, "Căn trái"], ["centerH", ICONS.alignCenterH, "Căn giữa ngang"], ["right", ICONS.alignRight, "Căn phải"], ["top", ICONS.alignTop, "Căn trên"], ["middle", ICONS.alignMiddle, "Căn giữa dọc"], ["bottom", ICONS.alignBottom, "Căn dưới"]]
+        .map(([k, ic, tip]) => rbBtn({ icon: ic, tip, kind: "sm", onClick: () => alignSelection(k), disabled: () => !multiSel() })),
+      rbBtn({ icon: ICONS.distH, tip: "Chia đều ngang (chọn 3+)", kind: "sm", onClick: () => distributeSelection("h"), disabled: () => selection.size < 3 }),
+      rbBtn({ icon: ICONS.distV, tip: "Chia đều dọc (chọn 3+)", kind: "sm", onClick: () => distributeSelection("v"), disabled: () => selection.size < 3 }),
+    ], true),
+    rbGroup("Xoay", [
+      rbBtn({ icon: ICONS.rotateLeft, label: "Xoay trái 90°", onClick: () => rotateBy(-90), disabled: () => !hasLeaves() }),
+      rbBtn({ icon: ICONS.rotateRight, label: "Xoay phải 90°", onClick: () => rotateBy(90), disabled: () => !hasLeaves() }),
+      rbBtn({ icon: ICONS.reset, label: "Về 0°", onClick: () => resetRotation(), disabled: () => !hasLeaves() }),
+    ]),
+  ] },
+  { id: "view", label: "Xem", build: () => [
+    rbGroup("Hiển thị", [
+      rbBtn({ icon: ICONS.grid, label: "Lưới", tip: "Hiện/ẩn lưới chấm", onClick: () => { savePrefs({ gridVisible: view.toggleGrid() }); }, pressed: () => view.gridVisible }),
+      rbBtn({ icon: ICONS.magnet, label: "Bắt dính", tip: "Bắt dính vào lưới khi kéo", onClick: () => { savePrefs({ snapEnabled: view.toggleSnap() }); refreshRibbon(); }, pressed: () => view.snapEnabled }),
+    ]),
+    rbGroup("Thu phóng", [
+      rbBtn({ icon: ICONS.zoomIn, label: "Phóng to", onClick: () => view.zoomIn() }), rbBtn({ icon: ICONS.zoomOut, label: "Thu nhỏ", onClick: () => view.zoomOut() }),
+      rbBtn({ icon: ICONS.fit, label: "Vừa khung", tip: "Xem toàn bộ sơ đồ (Shift+1)", onClick: () => view.fit() }), rbBtn({ icon: ICONS.reset, label: "100%", onClick: () => view.resetZoom() }),
+    ]),
+    rbGroup("Trình chiếu", [rbBtn({ icon: ICONS.present, label: "Trình chiếu", tip: "Xem toàn màn hình (P)", onClick: () => present.toggle() })]),
+    rbGroup("Trợ giúp", [rbBtn({ icon: ICONS.help, label: "Phím tắt", onClick: () => showShortcuts() })]),
+  ] },
+];
 
-    /* ---------- Vị trí, kích thước, xoay khung ---------- */
-    const rotatable = sel.filter(isRotatable);
-    if (rotatable.length > 0 || (sel.length === 1 && refShape)) {
-      const single = sel.length === 1 && !isLineType(e0.type);
-      const geomKids = [];
-      if (rotatable.length > 0) {
-        if (single) {
-          geomKids.push(row("Góc xoay khung",
-            h("div", { class: "size-row" },
-              mkNum(e0.rotation || 0, 0, 360, 1, (v) => setRotationAbs(v), { "aria-label": "Góc xoay khung (độ)" }),
-              h("button", { type: "button", class: "style-opt", text: "Đặt lại", title: "Về 0°", onClick: () => setRotationAbs(0) }),
-            )));
-        }
-        geomKids.push(row(single ? "" : "Xoay nhóm", optGroup(
-          optBtn("↺ 90°", false, () => rotateSelectionBy(-90), { title: "Xoay 90° ngược chiều kim đồng hồ" }),
-          optBtn("↻ 90°", false, () => rotateSelectionBy(90), { title: "Xoay 90° theo chiều kim đồng hồ" }),
-          optBtn("−15°", false, () => rotateSelectionBy(-15)),
-          optBtn("+15°", false, () => rotateSelectionBy(15)),
-        )));
-      }
-      if (single) {
-        geomKids.push(
-          h("div", { class: "style-cols style-row" },
-            miniField("X", mkNum(e0.x, -1e6, 1e6, 1, (v) => setGeom({ x: v }))),
-            miniField("Y", mkNum(e0.y, -1e6, 1e6, 1, (v) => setGeom({ y: v }))),
-            miniField("Rộng", mkNum(e0.width || 0, 8, 100000, 1, (v) => setGeom({ width: v }))),
-            miniField("Cao", mkNum(e0.height || 0, 8, 100000, 1, (v) => setGeom({ height: v }))),
-          ));
-      }
-      stylePanel.append(section("Khung & xoay", ...geomKids));
-    }
-
-    /* ---------- Hình dạng ---------- */
-    if (refShape && refShape.type !== "group") {
-      const s = refShape.style || {};
-      const lt = s.lineType || (s.strokeDasharray ? "dashed" : "solid");
-      const isRect = ["rectangle", "rounded-rectangle", "note", "frame", "text"].includes(refShape.type);
-      const notLine = (e) => !isLineType(e.type) && e.type !== "group";
-      const hasFill = s.fill && s.fill !== "none";
-      const hasStroke = s.stroke && s.stroke !== "none";
-      stylePanel.append(section("Hình dạng",
-        row("Màu nền", h("div", { class: "size-row" },
-          mkColor(s.fill, (v) => applyStyle({ fill: v }, "fill", notLine), "Màu nền"),
-          optBtn("Không", !hasFill, () => applyStyle({ fill: "none" }, null, notLine), { title: "Không tô nền" }))),
-        row("Viền", h("div", { class: "size-row" },
-          mkColor(s.stroke, (v) => applyStyle({ stroke: v }, "stroke", notLine), "Màu viền"),
-          mkNum(s.strokeWidth ?? 1.5, 0, 64, 0.5, (v) => applyStyle({ strokeWidth: v }, null, notLine), { "aria-label": "Độ dày viền" }),
-          optBtn("Không", !hasStroke, () => applyStyle({ stroke: "none" }, null, notLine), { title: "Không viền" }))),
-        row("Kiểu nét viền", optGroup(
-          ...[["solid", "Liền"], ["dashed", "Đứt"], ["dotted", "Chấm"]].map(([val, lab]) =>
-            optBtn(lab, lt === val, () => applyStyle({ lineType: val, strokeDasharray: val === "dashed" ? "8 6" : val === "dotted" ? "2 4" : "" }, null, notLine)))
-        )),
-        isRect ? row("Bo góc", mkNum(s.radius ?? 0, 0, 512, 1, (v) => applyStyle({ radius: v }, null, (e) => ["rectangle", "rounded-rectangle", "note", "frame", "text"].includes(e.type)))) : null,
-      ));
-    }
-
-    /* ---------- Đường / mũi tên ---------- */
-    if (refLine) {
-      const s = refLine.style || {};
-      const isL = isLineType;
-      const lt = s.lineType || (s.strokeDasharray ? "dashed" : "solid");
-      stylePanel.append(section("Đường & mũi tên",
-        row("Màu đường", mkColor(s.stroke, (v) => applyStyle({ stroke: v }, "stroke", isL), "Màu đường")),
-        row("Độ dày", mkNum(s.strokeWidth ?? 2, 0, 64, 0.5, (v) => applyStyle({ strokeWidth: v }, null, isL))),
-        row("Kiểu nét", optGroup(
-          ...[["solid", "Liền"], ["dashed", "Đứt"], ["dotted", "Chấm"]].map(([val, lab]) =>
-            optBtn(lab, lt === val, () => applyStyle({ lineType: val, strokeDasharray: val === "dashed" ? "8 6" : val === "dotted" ? "2 4" : "" }, null, isL)))
-        )),
-        ...[["arrowStart", "Mũi tên đầu"], ["arrowEnd", "Mũi tên cuối"]].map(([field, lab]) =>
-          row(lab, optGroup(
-            ...[["none", "Không"], ["arrow", "Mở"], ["triangle", "Đầy"]].map(([val, lab2]) =>
-              optBtn(lab2, (s[field] || "none") === val, () => applyStyle({ [field]: val }, null, isL)))
-          ))),
-      ));
-    }
-
-    /* ---------- Chung ---------- */
-    const s0 = e0.style || {};
-    stylePanel.append(section("Chung",
-      row("Độ mờ", mkNum(s0.opacity ?? 1, 0, 1, 0.05, (v) => applyStyle({ opacity: v }, "opacity"))),
-      row("Lớp (z-order)", optGroup(
-        optBtn("Lên trên", false, () => { for (const id of selection) doc.zTop(id); history.snapshot("z"); renderAll(); }),
-        optBtn("Xuống dưới", false, () => { for (const id of selection) doc.zBottom(id); history.snapshot("z"); renderAll(); }),
-      )),
-    ));
+function buildRibbon() {
+  closeMenu();
+  ribbonTabs.replaceChildren();
+  for (const t of TABS) {
+    const b = document.createElement("button"); b.type = "button"; b.className = "rb-tab"; b.textContent = t.label; b.id = "tab-" + t.id;
+    b.setAttribute("role", "tab"); b.setAttribute("aria-selected", String(t.id === activeTab));
+    b.addEventListener("click", () => { activeTab = t.id; try { localStorage.setItem("diagram-ribbon-tab", t.id); } catch { /* bỏ qua */ } buildRibbon(); });
+    ribbonTabs.appendChild(b);
   }
+  refreshers = [];
+  ribbonBody.replaceChildren(...(TABS.find((t) => t.id === activeTab) || TABS[0]).build());
+  refreshRibbon();
+}
+function refreshRibbon() { for (const f of refreshers) f(); }
 
-  function typeLabel(type) {
-    const labels = {
-      "rectangle": "Hình chữ nhật", "rounded-rectangle": "Bo góc", "ellipse": "Ellipse",
-      "diamond": "Diamond", "text": "Text", "note": "Ghi chú", "frame": "Frame",
-      "line": "Đường thẳng", "arrow": "Mũi tên", "connector": "Connector", "group": "Nhóm",
-    };
-    return labels[type] || type;
+/* ============ thanh trên, HUD, menu ngữ cảnh ============ */
+
+$("menuBtn").innerHTML = ICONS.menu;
+undoBtn.innerHTML = ICONS.undo; redoBtn.innerHTML = ICONS.redo;
+$("presentBtn").innerHTML = ICONS.present + '<span class="lbl">Trình chiếu</span>';
+$("presentBtn").title = "Xem toàn màn hình (P)";
+$("saveBtn").innerHTML = ICONS.save + '<span class="lbl">Lưu</span>';
+$("panelToggle").innerHTML = ICONS.panel;
+$("zoomOut").innerHTML = ICONS.zoomOut; $("zoomIn").innerHTML = ICONS.zoomIn; $("fitBtn").innerHTML = ICONS.fit; $("resetZoom").innerHTML = ICONS.reset;
+for (const b of [$("presentBtn"), $("saveBtn")]) { b.style.display = "inline-flex"; b.style.alignItems = "center"; b.style.gap = "6px"; }
+
+$("zoomIn").addEventListener("click", () => view.zoomIn());
+$("zoomOut").addEventListener("click", () => view.zoomOut());
+$("fitBtn").addEventListener("click", () => view.fit());
+$("resetZoom").addEventListener("click", () => view.resetZoom());
+undoBtn.addEventListener("click", doUndo);
+redoBtn.addEventListener("click", doRedo);
+$("panelToggle").addEventListener("click", () => $("stylePanel").classList.toggle("open"));
+$("presentBtn").addEventListener("click", () => present.toggle());
+$("saveBtn").addEventListener("click", () => save());
+
+const nameInput = $("diagramName");
+nameInput.value = BOOT.mode === "edit" && BOOT.diagram ? BOOT.diagram.name : "";
+nameInput.addEventListener("input", () => { nameDirty = true; updateSaveState(); });
+nameInput.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") nameInput.blur(); });
+
+SideMenu.build({
+  user,
+  currentPath: BOOT.mode === "edit" ? "/diagrams" : "/create",
+  items: [
+    { href: "/", label: "Trang chủ", icon: "home" },
+    { href: "/create", label: "Tạo sơ đồ", icon: "plus" },
+    { href: "/diagrams", label: "Danh sách sơ đồ", icon: "layers" },
+    { href: "/settings", label: "Cài đặt", icon: "settings" },
+    { href: "/admin", label: "Quản lý trang web", icon: "shield", adminOnly: true },
+  ],
+});
+$("menuBtn").addEventListener("click", () => SideMenu.open());
+
+/* ---- menu chuột phải ---- */
+let ctxMenu = null;
+function closeCtxMenu() { if (ctxMenu) { ctxMenu.remove(); ctxMenu = null; } }
+host.addEventListener("contextmenu", (e) => {
+  if (presenting) return;
+  e.preventDefault(); closeCtxMenu(); closeEditor(true);
+  const w = eventWorld(e);
+  const hit = hitTest(doc, w.x, w.y, 6 / view.zoom);
+  if (hit) { const r = doc.rootOf(hit); if (!selection.has(r.id)) { selection = new Set([r.id]); redraw(true); } }
+  const m = el2("div", "ctx-menu"); m.setAttribute("role", "menu");
+  const item = (label, fn, { kbd, danger, disabled } = {}) => {
+    const b = document.createElement("button"); b.type = "button"; b.textContent = label; if (danger) b.className = "danger"; if (disabled) b.disabled = true;
+    if (kbd) b.appendChild(el2("span", "kbd", kbd));
+    b.addEventListener("click", () => { closeCtxMenu(); fn(); }); m.appendChild(b);
+  };
+  const sep = () => m.appendChild(el2("div", "ctx-sep"));
+  const some = selection.size > 0;
+  if (some) {
+    const one = selRoots().length === 1 ? selRoots()[0] : null;
+    if (one && (one.type === "embed" || one.type === "video")) item("Bấm vào trình phát", () => view.media.setInteractive(one.id));
+    if (one && isTexty(one)) item("Sửa chữ", () => editText(one), { kbd: "Nhấp đúp" });
+    item("Sao chép", () => copySelection(), { kbd: "Ctrl+C" }); item("Cắt", () => cutSelection(), { kbd: "Ctrl+X" });
   }
+  item("Dán", () => pasteInternal(), { kbd: "Ctrl+V", disabled: !clipboard });
+  if (some) {
+    item("Nhân bản", () => duplicateSelection(), { kbd: "Ctrl+D" }); sep();
+    if (selection.size > 1) item("Nhóm", () => groupSelection(), { kbd: "Ctrl+G" });
+    if (selRoots().some((r) => r.type === "group")) item("Bỏ nhóm", () => ungroupSelection(), { kbd: "Ctrl+Shift+G" });
+    item("Lên đầu", () => reorder("front")); item("Xuống cuối", () => reorder("back")); sep();
+    item("Xóa", () => deleteSelection(), { kbd: "Del", danger: true });
+  } else { sep(); item("Chèn ảnh / GIF…", () => openImageDialog()); item("Chèn nhúng…", () => openMediaDialog({ mode: "embed" })); item("Vừa khung hình", () => view.fit()); }
+  document.body.appendChild(m); ctxMenu = m;
+  m.style.left = Math.min(e.clientX, window.innerWidth - m.offsetWidth - 8) + "px";
+  m.style.top = Math.min(e.clientY, window.innerHeight - m.offsetHeight - 8) + "px";
+  setTimeout(() => document.addEventListener("pointerdown", function once(ev) { if (!m.contains(ev.target)) { closeCtxMenu(); } document.removeEventListener("pointerdown", once, true); }, true), 0);
+});
 
-  /* ============ context menu ============ */
+/* ============ bàn phím ============ */
 
-  host.addEventListener("contextmenu", (e) => {
+window.addEventListener("keydown", (e) => {
+  if (e.target.closest?.("input, textarea, select, [contenteditable]")) return;
+  if (UI.activeModal) return;
+  const mod = e.ctrlKey || e.metaKey;
+  const k = e.key.toLowerCase();
+  if (presenting) { if (k === "p") { e.preventDefault(); present.stop(); } return; }
+  if (e.key === " " && !spaceDown) { spaceDown = true; host.style.cursor = "grab"; e.preventDefault(); return; }
+  if (e.key === " ") { e.preventDefault(); return; }
+  if (mod && k === "z") { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); return; }
+  if (mod && k === "y") { e.preventDefault(); doRedo(); return; }
+  if (mod && k === "s") { e.preventDefault(); save(); return; }
+  if (mod && k === "c") { if (selection.size) { e.preventDefault(); copySelection(); } return; }
+  if (mod && k === "x") { if (selection.size) { e.preventDefault(); cutSelection(); } return; }
+  if (mod && k === "d") { e.preventDefault(); duplicateSelection(); return; }
+  if (mod && k === "a") { e.preventDefault(); selection = new Set(doc.elements.filter((o) => !doc.parentOf(o.id)).map((o) => o.id)); redraw(true); return; }
+  if (mod && k === "g") { e.preventDefault(); e.shiftKey ? ungroupSelection() : groupSelection(); return; }
+  if (mod && e.key === "]") { e.preventDefault(); reorder(e.shiftKey ? "front" : "forward"); return; }
+  if (mod && e.key === "[") { e.preventDefault(); reorder(e.shiftKey ? "back" : "backward"); return; }
+  if (mod && (e.key === "0")) { e.preventDefault(); view.resetZoom(); return; }
+  if (mod) return;
+  if (e.key === "Escape") { if (action) cancelAction(); else if (view.media?.interactiveId) view.media.setInteractive(null); else if (tool !== "select") setTool("select"); else if (selection.size) { selection.clear(); redraw(true); } return; }
+  if (e.key === "Delete" || e.key === "Backspace") { if (selection.size) { e.preventDefault(); deleteSelection(); } return; }
+  if (e.key.startsWith("Arrow") && selection.size) {
     e.preventDefault();
-    const world = view.screenToWorld(e.clientX, e.clientY);
-    const hit = hitElement(world);
-    if (hit && !selection.has(hit.id)) selection = new Set([hit.id]);
-    renderAll();
-
-    const menu = document.createElement("div");
-    menu.className = "ctx-menu";
-    menu.setAttribute("role", "menu");
-    const mkItem = (label, fn, cls = "", icon) => {
-      const b = document.createElement("button");
-      b.setAttribute("role", "menuitem");
-      if (icon) b.innerHTML = ICONS[icon];
-      const span = document.createElement("span");
-      span.textContent = label;
-      b.appendChild(span);
-      if (cls) b.classList.add(cls);
-      b.addEventListener("click", () => { menu.remove(); fn(); });
-      return b;
-    };
-    const sep = () => { const d = document.createElement("div"); d.className = "ctx-sep"; return d; };
-
-    if (selection.size > 0) {
-      const title = document.createElement("div");
-      title.className = "ctx-title";
-      title.textContent = `${selection.size} phần tử được chọn`;
-      menu.appendChild(title);
-      menu.appendChild(mkItem("Sao chép", copySelection, "", "copy"));
-      menu.appendChild(mkItem("Tạo bản sao", duplicateSelection, "", "copy"));
-      menu.appendChild(mkItem("Xóa", deleteSelection, "danger", "trash"));
-      menu.appendChild(sep());
-      if (selected().some(isTextEl)) {
-        menu.appendChild(mkItem("Sửa chữ (Enter)", () => { const t = selected().find(isTextEl); if (t) editTextElement(t); }));
-      }
-      if (selected().some(isRotatable)) {
-        menu.appendChild(mkItem("Xoay phải 90°", () => rotateSelectionBy(90)));
-        menu.appendChild(mkItem("Xoay trái 90°", () => rotateSelectionBy(-90)));
-        if (selected().some((x) => !isLineType(x.type) && x.rotation)) menu.appendChild(mkItem("Đặt lại góc xoay", () => setRotationAbs(0)));
-        menu.appendChild(sep());
-      }
-      menu.appendChild(mkItem("Đưa lên trên", () => { for (const id of selection) doc.zTop(id); history.snapshot("z"); renderAll(); }));
-      menu.appendChild(mkItem("Đưa xuống dưới", () => { for (const id of selection) doc.zBottom(id); history.snapshot("z"); renderAll(); }));
-    } else {
-      menu.appendChild(mkItem("Dán", pasteClipboard, "", "copy"));
-    }
-
-    menu.style.left = `${e.clientX}px`;
-    menu.style.top = `${e.clientY}px`;
-    document.body.appendChild(menu);
-    // Giữ menu trong màn hình
-    const mr = menu.getBoundingClientRect();
-    if (mr.right > window.innerWidth) menu.style.left = `${Math.max(4, window.innerWidth - mr.width - 8)}px`;
-    if (mr.bottom > window.innerHeight) menu.style.top = `${Math.max(4, window.innerHeight - mr.height - 8)}px`;
-    const close = (ev) => {
-      if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener("pointerdown", close, true); }
-    };
-    setTimeout(() => document.addEventListener("pointerdown", close, true), 0);
-  });
-
-  /* ============ HUD buttons ============ */
-
-  document.getElementById("zoomIn").addEventListener("click", () => view.zoomIn());
-  document.getElementById("zoomOut").addEventListener("click", () => view.zoomOut());
-  document.getElementById("fitBtn").addEventListener("click", () => view.fit());
-  document.getElementById("resetZoom").addEventListener("click", () => view.resetZoom());
-
-  /* ============ autosave draft (client-only) ============ */
-
-  const DRAFT_KEY = `diagram-draft-${diagramId || "new"}`;
-  function saveDraft() {
-    try {
-      localStorage.setItem(DRAFT_KEY, JSON.stringify({ name: nameInput.value, data: doc.serialize(), t: Date.now() }));
-    } catch { /* full quota — bỏ qua */ }
+    const d = e.shiftKey ? 1 : GRID;
+    const dx = e.key === "ArrowLeft" ? -d : e.key === "ArrowRight" ? d : 0, dy = e.key === "ArrowUp" ? -d : e.key === "ArrowDown" ? d : 0;
+    for (const r of selRoots()) moveRoot(r, dx, dy);
+    commit("nudge", "nudge"); redraw(); return;
   }
-  setInterval(() => { if (dirty) saveDraft(); }, 8000);
-  window.addEventListener("beforeunload", () => { if (dirty) saveDraft(); });
+  if (e.key === "+" || e.key === "=") { view.zoomIn(); return; }
+  if (e.key === "-" || e.key === "_") { view.zoomOut(); return; }
+  if (e.key === "!" || (e.shiftKey && e.key === "1")) { view.fit(); return; }
+  const map = { v: "select", h: "hand", r: "rectangle", o: "ellipse", d: "diamond", l: "line", a: "arrow", c: "conn-elbow", t: "text", n: "note", f: "frame" };
+  if (map[k]) { setTool(map[k]); return; }
+  if (k === "i") { openImageDialog(); return; }
+  if (k === "e") { openMediaDialog({ mode: "embed" }); return; }
+  if (k === "p") { present.toggle(); return; }
+  if (e.key === "?") showShortcuts();
+});
+window.addEventListener("keyup", (e) => { if (e.key === " ") { spaceDown = false; host.style.cursor = tool === "hand" ? "grab" : tool === "select" ? "default" : "crosshair"; } });
+window.addEventListener("blur", () => { spaceDown = false; });
 
-  /* ============ phông tải xong → đo lại chữ ============ */
+/* ============ lưu, chia sẻ ============ */
 
-  FontCatalog.onChange(() => {
-    doc.refit();
-    if (activeEditor) activeEditor.place();
-    requestRender(false);
-  });
-  window.addEventListener("resize", () => { if (activeEditor) activeEditor.place(); });
+let saving = false;
+const DRAFT_KEY = () => "diagram-draft:" + (diagramId || "new");
+let draftTimer = 0;
+function scheduleDraft() {
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => {
+    if (!isDirty()) return;
+    try { localStorage.setItem(DRAFT_KEY(), JSON.stringify({ t: Date.now(), name: nameInput.value, data: doc.serialize() })); } catch { /* quá dung lượng: bỏ qua */ }
+  }, 1500);
+}
+const prevOnChange = history.onChange;
+history.onChange = (kind) => { prevOnChange(kind); scheduleDraft(); };
 
-  /* ============ init render ============ */
+async function save({ silent = false } = {}) {
+  if (saving) return false;
+  closeEditor(true);
+  const name = nameInput.value.trim() || "Sơ đồ chưa đặt tên";
+  if (mediaChars() > 9 * 1024 * 1024) { Toast.error("Ảnh tải lên quá nặng (tối đa ~9MB). Hãy xóa bớt hoặc dùng liên kết ảnh."); return false; }
+  saving = true; $("saveBtn").disabled = true;
+  const data = doc.serialize();
+  const res = diagramId ? await Api.patch(`/api/v1/diagrams/${diagramId}`, { name, data }) : await Api.post("/api/v1/diagrams", { name, data });
+  saving = false; $("saveBtn").disabled = false;
+  if (!res.success) { Toast.error(res.error?.message || "Không lưu được sơ đồ."); return false; }
+  const d = res.data.diagram;
+  if (!diagramId && d?.id) { try { localStorage.removeItem(DRAFT_KEY()); } catch { /* bỏ qua */ } diagramId = d.id; window.history.replaceState(null, "", `/edit/${diagramId}`); }
+  try { localStorage.removeItem(DRAFT_KEY()); } catch { /* bỏ qua */ }
+  nameInput.value = name; nameDirty = false;
+  history.markSaved(); updateSaveState();
+  if (!silent) Toast.ok("Đã lưu sơ đồ");
+  return true;
+}
 
-  if (doc.elements.length === 0 && !isEdit) {
-    view.panX = host.clientWidth / 2;
-    view.panY = host.clientHeight / 2;
-    view.applyTransform();
-  } else if (savedData?.viewport && (savedData.viewport.x || savedData.viewport.y || savedData.viewport.zoom !== 1)) {
-    view.panX = savedData.viewport.x;
-    view.panY = savedData.viewport.y;
-    view.zoom = savedData.viewport.zoom;
-    view.applyTransform();
+async function shareDialog() {
+  if (!diagramId) {
+    const ok = await UI.confirm({ title: "Lưu trước khi chia sẻ", message: "Sơ đồ cần được lưu trước khi tạo liên kết chia sẻ. Lưu ngay bây giờ?", okLabel: "Lưu và tiếp tục", danger: false });
+    if (!ok || !(await save({ silent: true }))) return;
+  } else if (isDirty() && !(await save({ silent: true }))) return;
+  const res = await Api.post(`/api/v1/diagrams/${diagramId}/share`);
+  if (!res.success) { Toast.error(res.error?.message || "Không tạo được liên kết."); return; }
+  const url = `${location.origin}/share/${res.data.share.token}`;
+  const body = el2("div"); const r = el2("div", "share-url-row"); const inp = document.createElement("input"); inp.className = "input"; inp.readOnly = true; inp.value = url; inp.setAttribute("aria-label", "Liên kết chia sẻ");
+  const cp = el2("button", "btn btn-primary", "Sao chép"); cp.type = "button"; cp.addEventListener("click", async () => { if (await UI.copyText(url)) Toast.ok("Đã sao chép liên kết"); });
+  r.append(inp, cp); body.append(el2("p", "sp-note", "Bất kỳ ai có liên kết đều xem được (chỉ xem), có nút Trình chiếu toàn màn hình."), r);
+  UI.modal({ title: "Chia sẻ sơ đồ", body, actions: [{ label: "Đóng", class: "btn-secondary", value: "close" }] });
+  setTimeout(() => inp.select(), 50);
+}
+
+/* ============ trình chiếu ============ */
+
+const present = PR.create({
+  container: root, view,
+  onEnter: () => { presenting = true; closeEditor(true); selection.clear(); closeMenu(); closeCtxMenu(); redrawNow(); },
+  onExit: () => { presenting = false; redrawNow(); },
+});
+PR.enableMediaTap(view, hitTest, () => doc, () => presenting);
+
+/* ============ khởi tạo ============ */
+
+function init() {
+  // Nút Chia sẻ trong thanh trên
+  const sh = document.createElement("button"); sh.type = "button"; sh.className = "btn btn-secondary btn-sm"; sh.innerHTML = ICONS.share + '<span class="lbl">Chia sẻ</span>';
+  sh.style.cssText = "display:inline-flex;align-items:center;gap:6px;"; sh.addEventListener("click", shareDialog);
+  document.querySelector(".topbar-right").prepend(sh);
+
+  buildRibbon();
+  const vp = savedData && savedData.viewport;
+  if (savedData && savedData.elements && savedData.elements.length) {
+    // luôn đưa toàn bộ sơ đồ vào khung nhìn khi mở để tránh mở ra vùng trống
+    view.fit(undefined, 90);
+    if (vp && Number.isFinite(vp.zoom) && vp.zoom > 0 && (vp.x || vp.y)) { view.panX = vp.x; view.panY = vp.y; view.zoom = vp.zoom; view.applyTransform(); }
   } else {
-    view.fit();
+    const r = host.getBoundingClientRect(); view.panX = r.width / 2; view.panY = r.height / 2; view.applyTransform();
   }
-  document.getElementById("zoomLabel").textContent = Math.round(view.zoom * 100) + "%";
-  renderAll();
+  ready = true;
+  redrawNow();
+  updateSaveState(); updateHistoryButtons();
+  window.addEventListener("resize", () => scheduleOverlay());
 
-  // Chỉ ở chế độ development: móc gỡ lỗi / kiểm thử tự động
-  if (window.__DIAGRAM__.IS_DEV) window.__EDITOR_DEBUG__ = { doc, history, view, selected, get selection() { return selection; }, setSelection(ids) { selection = new Set(ids); renderAll(); }, renderAll };
+  const start = new URLSearchParams(location.search).get("start");
+  if (start === "image") openImageDialog(); else if (start === "embed") openMediaDialog({ mode: "embed" }); else if (start === "video") openMediaDialog({ mode: "video" });
+  if (start) window.history.replaceState(null, "", location.pathname);
+  restoreDraft();
+}
+
+async function restoreDraft() {
+  let raw = null;
+  try { raw = JSON.parse(localStorage.getItem(DRAFT_KEY())); } catch { raw = null; }
+  if (!raw || !raw.data || !Array.isArray(raw.data.elements)) return;
+  const serverTime = BOOT.diagram?.updatedAt ? Date.parse(BOOT.diagram.updatedAt) : 0;
+  const draftJson = JSON.stringify(new DiagramDoc(raw.data).serialize());
+  const baseJson = history.states[history.index].data;
+  if (draftJson === baseJson || (serverTime && raw.t < serverTime) || (!raw.data.elements.length)) { try { localStorage.removeItem(DRAFT_KEY()); } catch { /* bỏ qua */ } return; }
+  const ok = await UI.confirm({ title: "Khôi phục bản nháp?", message: `Tìm thấy bản nháp chưa lưu từ ${new Date(raw.t).toLocaleString("vi-VN")}. Bạn có muốn khôi phục không?`, okLabel: "Khôi phục", cancelLabel: "Bỏ bản nháp", danger: false });
+  if (!ok) { try { localStorage.removeItem(DRAFT_KEY()); } catch { /* bỏ qua */ } return; }
+  const savedJson = baseJson;
+  doc.replaceFrom(raw.data); view.invalidate();
+  if (raw.name) { nameInput.value = raw.name; nameDirty = true; }
+  history.states = [{ label: "open", key: null, t: 0, data: JSON.stringify(doc.serialize()) }]; history.index = 0; history.savedData = savedJson;
+  view.fit(undefined, 90);
+  selection.clear(); redraw(true); updateSaveState(); updateHistoryButtons();
+}
+
+init();
+
+// Gỡ lỗi / kiểm thử tự động
+window.__DIAGRAM_EDITOR__ = { doc, history, view, get selection() { return selection; }, setTool, commit, save, redrawNow, insertParsed, insertImageFile, present, applyStyle };
 })();

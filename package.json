@@ -11,11 +11,9 @@
   "scripts": {
     "start": "node src/server/server.js",
     "dev": "node --watch src/server/server.js",
-    "test": "node --test tests/*.test.js",
-    "test:auth": "node --test tests/auth.test.js",
-    "test:authz": "node --test tests/authorization.test.js",
-    "test:security": "node --test tests/security.test.js",
-    "test:backup": "node --test tests/backup.test.js"
+    "test": "node --test",
+    "test:unit": "node --test tests/embedHosts.test.js tests/schema.test.js tests/preview.test.js",
+    "test:api": "node --test tests/diagrams.api.test.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

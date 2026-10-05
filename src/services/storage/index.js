@@ -60,10 +60,6 @@ function withRepositories(base) {
       revokeShare: (...a) => base.revokeShare(...a),
       countActiveShares: (...a) => base.countActiveShares(...a),
     },
-    backup: base.backup ?? {
-      exportAll: (...a) => base.exportAll(...a),
-      applySnapshot: (...a) => base.applySnapshot(...a),
-    },
     // Giu tham chieu truc tiep cho cac back-compat call base.method(...)
     ...proxyAll(base),
   };

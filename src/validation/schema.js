@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { config } from '../server/config.js';
+import { isAllowedEmbedUrl } from '../shared/embedHosts.js';
 
 const L = config.limits;
 
@@ -87,12 +88,9 @@ export const updateProfileSchema = z.object({
 /** So thuc hop le (x/y/width/height/rotation...). */
 const num = z.number().finite();
 
-/** SVG color an toan: hex hoac ten CSS color co gioi han. */
-const colorRegex = /^(#[0-9a-fA-F]{3,8}|rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\)|[a-zA-Z]{3,32})$/;
+/** Màu an toàn: hex 3–8 ký tự, rgb()/rgba()/hsl()/hsla() hoặc tên màu CSS (none, transparent, red...). */
+const colorRegex = /^(#[0-9a-fA-F]{3,8}|(rgb|hsl)a?\(\s*[0-9.%\s,/-]{1,48}\)|[a-zA-Z]{3,32})$/;
 const color = z.string().trim().max(64).regex(colorRegex, 'Màu không hợp lệ.');
-
-/** Tên phông chữ: chữ (kể cả có dấu), số, khoảng trắng, _ . - — không cho phép dấu nháy/ngoặc để không chèn được CSS. */
-const fontFamilyName = z.string().trim().min(1).max(80).regex(/^[\p{L}\p{N} _.\-]+$/u, 'Tên phông chữ không hợp lệ.');
 
 const styleSchema = z
   .object({
@@ -102,24 +100,17 @@ const styleSchema = z
     strokeDasharray: z.string().trim().max(64).regex(/^[0-9,\s]*$/).optional(),
     opacity: num.min(0).max(1).optional(),
     radius: num.min(0).max(512).optional(),
-    // --- chữ ---
-    fontSize: num.min(4).max(1000).optional(),
+    fontSize: num.min(6).max(200).optional(),
     fontWeight: z.enum(['normal', 'bold']).optional(),
     fontStyle: z.enum(['normal', 'italic']).optional(),
-    textDecoration: z.enum(['none', 'underline', 'line-through', 'underline line-through']).optional(),
+    textDecoration: z.enum(['none', 'underline']).optional(),
     textAlign: z.enum(['left', 'center', 'right']).optional(),
-    verticalAlign: z.enum(['top', 'middle', 'bottom']).optional(),
-    // 'sans' | 'serif' | 'mono' là giá trị của bản cũ, vẫn hợp lệ theo quy tắc tên phông.
-    fontFamily: fontFamilyName.optional(),
-    lineHeight: num.min(0.8).max(4).optional(),
-    letterSpacing: num.min(-10).max(100).optional(),
-    textTransform: z.enum(['none', 'upper', 'lower', 'capitalize']).optional(),
-    autoFit: z.enum(['none', 'shrink', 'resize']).optional(),
-    wrap: z.boolean().optional(),
-    textRotation: num.min(-3600).max(3600).optional(),
+    fontFamily: z.enum(['sans', 'serif', 'mono']).optional(),
     textColor: color.optional(),
     background: color.optional(),
     lineType: z.enum(['solid', 'dashed', 'dotted']).optional(),
+    route: z.enum(['straight', 'elbow', 'curve']).optional(),
+    shadow: z.boolean().optional(),
     arrowStart: z.enum(['none', 'arrow', 'triangle']).optional(),
     arrowEnd: z.enum(['none', 'arrow', 'triangle']).optional(),
     z: num.int().min(-1000000).max(1000000).optional(),
@@ -132,7 +123,16 @@ const textContent = z.string().max(4000);
 export const elementTypeSchema = z.enum([
   'rectangle', 'rounded-rectangle', 'ellipse', 'diamond', 'line', 'arrow',
   'connector', 'text', 'note', 'frame', 'image', 'group',
+  // hình khối bổ sung
+  'triangle', 'right-triangle', 'parallelogram', 'trapezoid', 'pentagon', 'hexagon', 'octagon',
+  'star', 'plus', 'cylinder', 'document', 'cloud', 'callout', 'arrow-right', 'chevron', 'heart',
+  // phương tiện
+  'video', 'embed',
 ]);
+
+/** Nguồn ảnh: https hoặc data URI ảnh (tải lên). Nguồn video: chỉ https. */
+const imageSrcRegex = /^(https:\/\/[^\s"'<>]{4,2000}|data:image\/(png|jpeg|jpg|gif|webp|avif|svg\+xml);base64,[A-Za-z0-9+/=]+)$/;
+const videoSrcRegex = /^https:\/\/[^\s"'<>]{4,2000}$/;
 
 const elementSchema = z
   .object({
@@ -153,10 +153,29 @@ const elementSchema = z
     endSide: z.enum(['top', 'bottom', 'left', 'right']).optional(),
     // group
     children: z.array(z.string().min(1).max(64)).max(2000).optional(),
-    // data phu (vi du src cho image — chi cho phep data: URI o client render)
-    data: z.record(z.unknown()).optional(),
+    // phương tiện: ảnh/GIF (src), video (src), nhúng (embedUrl + provider)
+    src: z.string().max(L.mediaItemChars).optional(),
+    embedUrl: z.string().max(2000).optional(),
+    provider: z.string().trim().max(40).optional(),
+    title: z.string().trim().max(200).optional(),
+    alt: z.string().trim().max(300).optional(),
+    lockRatio: z.boolean().optional(),
+    loop: z.boolean().optional(),
+    muted: z.boolean().optional(),
+    autoplay: z.boolean().optional(),
+    controls: z.boolean().optional(),
   })
-  .strip();
+  .strip()
+  .superRefine((el, ctx) => {
+    const bad = (path, message) => ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
+    if (el.type === 'image') {
+      if (!el.src || !imageSrcRegex.test(el.src)) bad('src', 'Ảnh phải là liên kết https hoặc ảnh tải lên hợp lệ.');
+    } else if (el.type === 'video') {
+      if (!el.src || !videoSrcRegex.test(el.src)) bad('src', 'Video phải là liên kết https.');
+    } else if (el.type === 'embed') {
+      if (!el.embedUrl || !isAllowedEmbedUrl(el.embedUrl)) bad('embedUrl', 'Liên kết nhúng không hợp lệ hoặc trang này chưa được hỗ trợ.');
+    }
+  });
 
 const viewportSchema = z
   .object({ x: num, y: num, zoom: num.min(0.05).max(20) })
@@ -168,7 +187,17 @@ export const diagramDataSchema = z
     viewport: viewportSchema,
     elements: z.array(elementSchema).max(L.maxElements),
   })
-  .strip();
+  .strip()
+  .superRefine((d, ctx) => {
+    const total = d.elements.reduce((n, e) => n + (e.src ? e.src.length : 0), 0);
+    if (total > L.mediaTotalChars) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['elements'],
+        message: `Ảnh/GIF trong sơ đồ quá nặng (tối đa ${Math.floor(L.mediaTotalChars / 1048576)}MB). Hãy dùng liên kết thay vì tải lên.`,
+      });
+    }
+  });
 
 export const createDiagramSchema = z.object({
   name: z.string().trim().min(1, 'Vui lòng nhập tên sơ đồ.').max(L.diagramNameLength, `Tên tối đa ${L.diagramNameLength} ký tự.`),

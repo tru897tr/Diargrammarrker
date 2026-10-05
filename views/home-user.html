@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{{title}}</title>
+  <meta name="description" content="Trang chủ Diagram: bắt đầu nhanh và tiếp tục các sơ đồ gần đây.">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/css/fonts.css">
+  <link rel="stylesheet" href="/css/base.css">
+  <link rel="stylesheet" href="/css/pages.css">
+</head>
+<body>
+  <script id="boot-data" type="application/json">{{boot}}</script>
+
+  <header class="site-header">
+    <div class="header-left" style="display:flex;align-items:center;gap:10px;">
+      <button class="hamburger" id="menuBtn" aria-label="Mở menu"></button>
+      <a class="brand" href="/">
+        <svg width="26" height="26" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+          <rect x="4" y="4" width="56" height="56" rx="14" fill="#4f46e5"/>
+          <rect x="14" y="18" width="16" height="12" rx="3" fill="#fff" fill-opacity="0.95"/>
+          <rect x="36" y="36" width="16" height="12" rx="3" fill="#fff" fill-opacity="0.7"/>
+          <path d="M30 24 C34 24, 32 38, 36 40" stroke="#c7d2fe" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+          <path d="M36 40 l-4.5 -3 M36 40 l0.5 -5.5" stroke="#c7d2fe" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+        </svg>
+        <span>Diagram</span>
+      </a>
+    </div>
+    <div class="header-actions" id="headerActions"></div>
+  </header>
+
+  <main class="hu">
+    <section class="hu-top" aria-labelledby="huTitle">
+      <div class="hu-greet">
+        <p class="hu-eyebrow" id="huDate"></p>
+        <h1 id="huTitle">Chào bạn,<br>hôm nay vẽ gì nhỉ?</h1>
+        <p class="hu-sub">Mở lại sơ đồ đang làm dở, hoặc bắt đầu một tờ giấy mới — hình khối, ảnh, video, YouTube, Canva… đều đặt được lên cùng một canvas.</p>
+        <div class="hu-cta">
+          <a class="btn btn-primary btn-lg" href="/create" id="huNew"></a>
+          <a class="btn btn-secondary btn-lg" href="/diagrams">Tất cả sơ đồ</a>
+        </div>
+      </div>
+      <a class="hu-blank" href="/create" aria-label="Tạo sơ đồ trống">
+        <span class="hu-blank-grid" aria-hidden="true"></span>
+        <span class="hu-blank-plus" id="huPlus" aria-hidden="true"></span>
+        <span class="hu-blank-label">Trang trống</span>
+      </a>
+    </section>
+
+    <section class="hu-sec" aria-labelledby="huStartH">
+      <div class="hu-sec-head"><h2 id="huStartH">Bắt đầu nhanh</h2><span>Mở trình soạn thảo với đúng công cụ bạn cần</span></div>
+      <div class="hu-starters">
+        <a class="hu-start" href="/create">
+          <span class="hu-start-ico" data-ico="rect"></span><strong>Hình khối &amp; đường nối</strong><span>Lưu đồ, sơ đồ khối, 20 loại hình có sẵn</span>
+        </a>
+        <a class="hu-start" href="/create?start=image">
+          <span class="hu-start-ico" data-ico="image"></span><strong>Ảnh &amp; GIF</strong><span>Tải lên hoặc dán liên kết, ảnh động vẫn chạy</span>
+        </a>
+        <a class="hu-start" href="/create?start=video">
+          <span class="hu-start-ico" data-ico="video"></span><strong>Video &amp; YouTube</strong><span>Dán liên kết là có trình phát, kéo đi đâu cũng được</span>
+        </a>
+        <a class="hu-start" href="/create?start=embed">
+          <span class="hu-start-ico" data-ico="embed"></span><strong>Nhúng Canva &amp; các trang khác</strong><span>Dán mã &lt;iframe&gt; hoặc liên kết, Diagram tự nhận diện</span>
+        </a>
+      </div>
+    </section>
+
+    <section class="hu-sec" aria-labelledby="huRecentH">
+      <div class="hu-sec-head"><h2 id="huRecentH">Tiếp tục làm việc</h2><a href="/diagrams" class="hu-link" id="huAll" hidden>Xem tất cả</a></div>
+      <div class="hu-recent" id="huRecent" aria-live="polite">
+        <div class="hu-skel"></div><div class="hu-skel"></div><div class="hu-skel"></div>
+      </div>
+    </section>
+
+    <section class="hu-sec hu-news" aria-labelledby="huNewsH">
+      <div class="hu-sec-head"><h2 id="huNewsH">Mới trong Diagram</h2></div>
+      <ul class="hu-news-list">
+        <li><span class="hu-news-ico" data-ico="present"></span><div><strong>Trình chiếu toàn màn hình</strong><p>Có ở trình soạn thảo và trang chia sẻ. Vẫn thu phóng, kéo di chuyển, bấm vào video để phát.</p></div></li>
+        <li><span class="hu-news-ico" data-ico="eyedropper"></span><div><strong>Bảng màu riêng</strong><p>Nhập mã HEX, RGB, HSL hoặc tên màu; chỉnh độ trong suốt; lấy màu từ màn hình.</p></div></li>
+        <li><span class="hu-news-ico" data-ico="undo"></span><div><strong>Hoàn tác / làm lại bằng mũi tên</strong><p>Ngay trên thanh công cụ, cùng Ctrl+Z và Ctrl+Shift+Z — chạy đúng từng bước.</p></div></li>
+      </ul>
+    </section>
+  </main>
+
+  <script src="/js/core.js"></script>
+  <script src="/js/icons.js"></script>
+  <script src="/js/home-user.js"></script>
+</body>
+</html>

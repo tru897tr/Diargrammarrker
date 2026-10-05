@@ -25,12 +25,15 @@ async function currentSession(req) {
   return resolveSession(raw);
 }
 
-/** HOME — landing page (public, hiện trạng thái đăng nhập nếu có session). */
+/**
+ * HOME — chưa đăng nhập: trang giới thiệu (landing). Đã đăng nhập: trang chủ làm việc
+ * (chào, bắt đầu nhanh, sơ đồ gần đây) — view khác hẳn, chọn ngay ở server để không bị nhấp nháy.
+ */
 router.get('/', async (req, res, next) => {
   try {
     const r = await currentSession(req);
-    await renderView(res, 'home.html', {
-      title: 'Diagram — Tạo sơ đồ trên canvas vô hạn',
+    await renderView(res, r ? 'home-user.html' : 'home.html', {
+      title: r ? 'Trang chủ — Diagram' : 'Diagram — Tạo sơ đồ trên canvas vô hạn',
       user: r?.user ?? null,
       session: r?.session ?? null,
     });

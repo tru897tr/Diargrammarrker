@@ -1,129 +1,60 @@
-/* Share view: render diagram read-only, cho pan/zoom, khong toolbar edit */
+/* Trang chia sẻ (chỉ xem): kéo để di chuyển, cuộn để thu phóng, nút Trình chiếu toàn màn hình. */
 "use strict";
 
 (function () {
-  const { Theme } = window.__DIAGRAM__;
-
+  const { Theme, ICONS, BOOT } = window.__DIAGRAM__;
+  const E = window.__DIAGRAM_ENGINE__;
+  const PR = window.__DIAGRAM_PRESENT__;
   Theme.init();
 
   const svg = document.getElementById("svgRoot");
   const host = document.getElementById("canvasHost");
+  const wrap = document.getElementById("shareWrap");
 
-  // Ve truc tiep tu boot data (server da kiem tra token + tra du lieu can thiet)
-  const shareData = JSON.parse(document.getElementById("boot-data").textContent).shareData;
+  const shareData = BOOT.shareData;
   document.getElementById("shareTitle").textContent = shareData?.diagram?.name || "Sơ đồ";
 
-  const renderer = new ShareRenderer(svg, host, shareData.diagram.data);
+  const doc = new E.DiagramDoc(shareData.diagram.data);
+  const view = new E.CanvasView(host, svg, doc, {
+    readOnly: true,
+    gridVisible: true,
+    onZoom: (z) => { document.getElementById("zoomLabel").textContent = Math.round(z * 100) + "%"; },
+  });
+  view.renderContent();
+  view.fit(undefined, 72);
 
-  document.getElementById("zoomIn").innerHTML =
-    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M11 8v6M8 11h6M21 21l-4.3-4.3"/></svg>';
-  document.getElementById("zoomOut").innerHTML =
-    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M8 11h6M21 21l-4.3-4.3"/></svg>';
-  document.getElementById("fitBtn").innerHTML =
-    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>';
+  // Bấm vào video / nhúng để tương tác (phát, cuộn...)
+  PR.enableMediaTap(view, E.hitTest, () => doc);
 
-  document.getElementById("zoomIn").addEventListener("click", () => renderer.zoomIn());
-  document.getElementById("zoomOut").addEventListener("click", () => renderer.zoomOut());
-  document.getElementById("fitBtn").addEventListener("click", () => renderer.fit());
-})();
+  document.getElementById("zoomIn").innerHTML = ICONS.zoomIn;
+  document.getElementById("zoomOut").innerHTML = ICONS.zoomOut;
+  document.getElementById("fitBtn").innerHTML = ICONS.fit;
+  document.getElementById("hudPresent").innerHTML = ICONS.present;
+  const pb = document.getElementById("presentBtn");
+  pb.innerHTML = ICONS.present + '<span class="lbl">Trình chiếu</span>';
+  pb.style.cssText = "display:inline-flex;align-items:center;gap:8px;";
 
-function ShareRenderer(svg, host, data) {
-  const SVGNS = "http://www.w3.org/2000/svg";
-  const { Render, DiagramDoc, FontCatalog } = window.__DIAGRAM_ENGINE__;
+  document.getElementById("zoomIn").addEventListener("click", () => view.zoomIn());
+  document.getElementById("zoomOut").addEventListener("click", () => view.zoomOut());
+  document.getElementById("fitBtn").addEventListener("click", () => view.fit());
 
-  function el(tag, attrs = {}) {
-    const node = document.createElementNS(SVGNS, tag);
-    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
-    return node;
-  }
+  const present = PR.create({ container: wrap, view });
+  pb.addEventListener("click", () => present.toggle());
+  document.getElementById("hudPresent").addEventListener("click", () => present.toggle());
 
-  // grid (neu frame co)
-  const defs = el("defs");
-  const pattern = el("pattern", { id: "sgrid", width: 8, height: 8, patternUnits: "userSpaceOnUse" });
-  pattern.innerHTML = '<path d="M8 0H0V8" fill="none" stroke="currentColor" stroke-opacity="0.08" stroke-width="1"/>';
-  defs.appendChild(pattern);
-  svg.appendChild(defs);
-  const gridRect = el("rect", { width: "100%", height: "100%", fill: "url(#sgrid)" });
-  gridRect.style.color = "var(--border-strong)";
-  svg.appendChild(gridRect);
-
-  const scene = el("g");
-  svg.appendChild(scene);
-
-  this.zoom = 1;
-  this.panX = 0;
-  this.panY = 0;
-
-  this.applyTransform = () => {
-    scene.setAttribute("transform", `translate(${this.panX} ${this.panY}) scale(${this.zoom})`);
-    pattern.setAttribute("patternTransform", `translate(${this.panX % 8} ${this.panY % 8}) scale(${this.zoom})`);
-    document.getElementById("zoomLabel").textContent = Math.round(this.zoom * 100) + "%";
-  };
-
-  // Chuẩn hóa dữ liệu bằng chính engine của editor (kích thước chữ, góc xoay, phông chữ...).
-  const doc = new DiagramDoc(data);
-  const draw = () => {
-    scene.replaceChildren();
-    for (const e of doc.elements) scene.appendChild(Render.element(e));
-  };
-  draw();
-  // Phông Google Fonts tải xong → đo lại chữ rồi vẽ lại.
-  FontCatalog.onChange(() => { doc.refit(); draw(); });
-
-  this.fit = () => {
-    const bnd = doc.bounds(doc.elements);
-    const r = host.getBoundingClientRect();
-    if (!bnd || (bnd.w < 1 && bnd.h < 1)) {
-      this.panX = r.width / 2; this.panY = r.height / 2; this.zoom = 1;
-    } else {
-      const pad = 60;
-      this.zoom = Math.min((r.width - pad * 2) / Math.max(bnd.w, 1), (r.height - pad * 2) / Math.max(bnd.h, 1), 4);
-      this.zoom = Math.max(this.zoom, 0.05);
-      this.panX = r.width / 2 - (bnd.minX + bnd.w / 2) * this.zoom;
-      this.panY = r.height / 2 - (bnd.minY + bnd.h / 2) * this.zoom;
+  window.addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey || e.target.closest?.("input, textarea")) return;
+    const k = e.key.toLowerCase();
+    if (k === "p" || k === "f") { e.preventDefault(); present.toggle(); }
+    else if (!present.active) {
+      if (e.key === "+" || e.key === "=") view.zoomIn();
+      else if (e.key === "-" || e.key === "_") view.zoomOut();
+      else if (e.key === "0") view.fit();
+      else if (e.key === "Escape") view.media?.setInteractive(null);
     }
-    this.applyTransform();
-  };
-
-  this.zoomIn = () => { this.zoomAt(1.2); };
-  this.zoomOut = () => { this.zoomAt(1 / 1.2); };
-  this.zoomAt = (factor) => {
-    const r = host.getBoundingClientRect();
-    this.zoom = Math.max(0.05, Math.min(20, this.zoom * factor));
-    this.panX = r.width / 2 - (r.width / 2 - this.panX) * (this.zoom / (this.zoom / factor));
-    this.panY = r.height / 2 - (r.height / 2 - this.panY) * (this.zoom / (this.zoom / factor));
-    this.applyTransform();
-  };
-
-  // pan: chuot ke hoac chuot giua
-  let panning = null;
-  host.style.cursor = "grab";
-  host.addEventListener("pointerdown", (e) => {
-    panning = { sx: e.clientX, sy: e.clientY, px: this.panX, py: this.panY };
-    host.style.cursor = "grabbing";
-  });
-  window.addEventListener("pointermove", (e) => {
-    if (!panning) return;
-    this.panX = panning.px + (e.clientX - panning.sx);
-    this.panY = panning.py + (e.clientY - panning.sy);
-    this.applyTransform();
-  });
-  window.addEventListener("pointerup", () => {
-    panning = null;
-    host.style.cursor = "grab";
   });
 
-  host.addEventListener("wheel", (e) => {
-    e.preventDefault();
-    const factor = Math.pow(1.0015, -e.deltaY);
-    const r = host.getBoundingClientRect();
-    const cx = e.clientX - r.left, cy = e.clientY - r.top;
-    const old = this.zoom;
-    this.zoom = Math.max(0.05, Math.min(20, old * factor));
-    this.panX = cx - ((cx - this.panX) / old) * this.zoom;
-    this.panY = cy - ((cy - this.panY) / old) * this.zoom;
-    this.applyTransform();
-  }, { passive: false });
-
-  this.fit();
-}
+  // Khi đổi kích thước cửa sổ ở chế độ thường: giữ nguyên vị trí, chỉ vẽ lại lưới
+  window.addEventListener("resize", () => view.applyTransform());
+  window.__DIAGRAM_SHARE__ = { doc, view, present };
+})();

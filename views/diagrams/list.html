@@ -6,6 +6,7 @@
   <title>{{title}}</title>
   <meta name="description" content="Danh sách sơ đồ của bạn trên Diagram.">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/css/fonts.css">
   <link rel="stylesheet" href="/css/base.css">
   <link rel="stylesheet" href="/css/pages.css">
 </head>
@@ -39,11 +40,27 @@
       </a>
     </div>
 
-    <div class="diagram-list" id="list" aria-live="polite">
-      <div class="skeleton" style="height:72px"></div>
-      <div class="skeleton" style="height:72px"></div>
-      <div class="skeleton" style="height:72px"></div>
+    <div class="dg-toolbar" id="toolbar" hidden>
+      <label class="dg-search">
+        <span class="sr-only">Tìm sơ đồ theo tên</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input type="search" id="search" placeholder="Tìm theo tên…" autocomplete="off" maxlength="120">
+      </label>
+      <label class="dg-sort">
+        <span>Sắp xếp</span>
+        <select id="sort" class="input">
+          <option value="updated">Sửa gần đây</option>
+          <option value="created">Mới tạo</option>
+          <option value="name">Tên A → Z</option>
+        </select>
+      </label>
+      <span class="dg-count" id="count" aria-live="polite"></span>
     </div>
+
+    <div class="dg-grid" id="list" aria-live="polite">
+      <div class="dg-skel"></div><div class="dg-skel"></div><div class="dg-skel"></div><div class="dg-skel"></div>
+    </div>
+    <p class="dg-none hidden" id="noMatch">Không có sơ đồ nào khớp với tìm kiếm.</p>
 
     <div class="empty-state hidden" id="empty">
       <svg width="56" height="56" viewBox="0 0 64 64" fill="none" aria-hidden="true">
@@ -59,6 +76,7 @@
   </main>
 
   <script src="/js/core.js"></script>
+  <script src="/js/icons.js"></script>
   <script src="/js/list.js"></script>
 </body>
 </html>

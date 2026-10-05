@@ -284,12 +284,20 @@ const UI = {
       document.body.appendChild(backdrop);
       this.activeModal = backdrop;
 
-      // Hiện popup (thêm class "open" sau khi gắn vào DOM để chạy transition)
+      // Hiện popup (thêm class "open" sau khi gắn vào DOM để chạy transition), rồi mới đặt focus:
+      // nếu focus() khi popup còn visibility:hidden thì trình duyệt bỏ qua và ô nhập không nhận được tiêu điểm.
+      const focusFirst = () => {
+        if (backdrop._closed) return;
+        if (modal.contains(document.activeElement) && document.activeElement !== modal) return; // đã có focus bên trong (vd. body tự đặt)
+        const list = [...modal.querySelectorAll("button, input, select, textarea, [tabindex]")]
+          .filter((x) => !x.disabled && !x.hidden && !x.classList.contains("hidden-input") && x.offsetParent !== null);
+        const target = list.find((x) => x.autofocus) || list.find((x) => x.matches("textarea, select, input:not([type=file]):not([type=checkbox]):not([type=radio])")) || list[0];
+        target?.focus();
+        if (target && target.matches("input[type=text], input:not([type]), input[type=url], input[type=search]")) target.select?.();
+      };
       requestAnimationFrame(() => backdrop.classList.add("open"));
-
-      // Focus: nút autofocus, nếu không có thì phần tử focus được đầu tiên
-      const focusables = [...modal.querySelectorAll("button, input, select, textarea, [tabindex]")];
-      (focusables.find((x) => x.autofocus) || focusables[0])?.focus();
+      // visibility chuyển hidden→visible theo transition nên cần chờ vài chục ms mới focus được
+      setTimeout(focusFirst, 40);
 
       backdrop.addEventListener("mousedown", (e) => {
         if (e.target === backdrop) this.closeModal(backdrop, null);

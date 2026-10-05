@@ -6,6 +6,7 @@
   <title>{{title}}</title>
   <meta name="description" content="Xem sơ đồ được chia sẻ (chỉ đọc).">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/css/fonts.css">
   <link rel="stylesheet" href="/css/base.css">
   <link rel="stylesheet" href="/css/pages.css">
   <link rel="stylesheet" href="/css/editor.css">
@@ -13,7 +14,7 @@
 <body>
   <script id="boot-data" type="application/json">{{boot}}</script>
 
-  <div class="share-wrap">
+  <div class="share-wrap" id="shareWrap">
     <header class="share-header">
       <a class="brand" href="/">
         <svg width="24" height="24" viewBox="0 0 64 64" fill="none" aria-hidden="true">
@@ -24,28 +25,33 @@
         </svg>
         <span>Diagram</span>
       </a>
-      <div style="display:flex;align-items:center;gap:12px;min-width:0;">
+      <div class="share-head-right">
         <span class="share-title" id="shareTitle"></span>
         <span class="badge badge-warn share-tag">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
           CHỈ ĐỌC
         </span>
+        <button class="btn btn-primary btn-sm share-present" id="presentBtn" type="button"></button>
       </div>
     </header>
 
     <div class="canvas-host" id="canvasHost" style="flex:1;">
-      <svg class="diagram-svg" id="svgRoot" xmlns="http://www.w3.org/2000/svg"></svg>
+      <svg class="diagram-svg" id="svgRoot" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sơ đồ được chia sẻ"></svg>
       <div class="canvas-hud">
         <button class="hud-btn" id="zoomOut" aria-label="Thu nhỏ"></button>
         <span class="hud-zoom" id="zoomLabel">100%</span>
         <button class="hud-btn" id="zoomIn" aria-label="Phóng to"></button>
         <button class="hud-btn" id="fitBtn" aria-label="Xem toàn bộ"></button>
+        <button class="hud-btn" id="hudPresent" aria-label="Trình chiếu toàn màn hình" data-tip="Trình chiếu (P)"></button>
       </div>
     </div>
   </div>
 
   <script src="/js/core.js"></script>
+  <script src="/js/icons.js"></script>
+  <script src="/js/media.js"></script>
   <script src="/js/editor-canvas.js"></script>
+  <script src="/js/present.js"></script>
   <script src="/js/share-view.js"></script>
 </body>
 </html>

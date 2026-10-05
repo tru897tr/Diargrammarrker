@@ -25,11 +25,22 @@ Khi `NODE_ENV=development` (mặc định nếu không đặt biến này):
 Khi `NODE_ENV=production` (Render): người dùng chỉ thấy thông báo chung, **không** có stack trace; chi tiết lỗi
 chỉ nằm trong log của server.
 
-## Định dạng chữ & xoay trong trình soạn thảo
-Chọn một phần tử rồi dùng panel bên phải. Phím tắt: `Ctrl+B/I/U` (đậm/nghiêng/gạch chân), `Ctrl+Shift+<` / `>` (giảm/tăng cỡ chữ theo bậc), `Ctrl+[` / `]` (±1 điểm), `Enter`/`F2` hoặc nhấp đúp (sửa chữ). Kéo núm tròn phía trên phần tử để xoay (giữ `Shift` để xoay theo bước 15°).
-Google Fonts được tải khi bạn chọn phông đó (cần Internet); không có mạng thì chữ hiển thị bằng phông dự phòng.
+## Trình soạn thảo
+- Ribbon 4 tab giống PowerPoint: **Trang chủ · Chèn · Sắp xếp · Xem**. Hoàn tác/làm lại là hai mũi tên ở thanh trên.
+- Chèn: 20 hình khối, đường/mũi tên/đường nối (thẳng, gấp khúc, cong, tự bám vào hình), văn bản, ghi chú, khung, **ảnh/GIF, video, nhúng** (YouTube, Canva, Vimeo, Google Slides, Figma, Spotify...).
+- Dán thẳng liên kết YouTube/Canva hoặc mã `<iframe>` bằng Ctrl+V; kéo thả ảnh vào khung vẽ.
+- Trình chiếu toàn màn hình: nút **Trình chiếu** (hoặc phím `P`) ở trình soạn thảo và trang chia sẻ.
+- Phím tắt: bấm `?` trong trình soạn thảo.
 
-## Sao lưu & khôi phục (dành cho admin)
-Vào **Quản lý trang web → Sao lưu & khôi phục dữ liệu**. Vì `STORAGE_PROVIDER=memory` mất dữ liệu khi server khởi động lại, hãy xuất tệp sao lưu định kỳ.
-Khôi phục sau khi server khởi động lại: đăng ký tài khoản admin (người đầu tiên là admin) → vào trang quản lý → chọn tệp → chế độ **Gộp**. Nếu dùng cùng email với admin cũ, mọi sơ đồ cũ sẽ được chuyển về tài khoản mới và các tài khoản còn lại đăng nhập lại bằng mật khẩu cũ.
-Tệp sao lưu chứa mã băm mật khẩu và token chia sẻ — cần bảo quản cẩn thận.
+## Biến môi trường thêm
+| Biến | Mặc định | Ý nghĩa |
+|---|---|---|
+| `EMBED_EXTRA_HOSTS` | (trống) | Thêm tên miền được phép nhúng, cách nhau dấu phẩy |
+| `DIAGRAM_BODY_MB` | `12` | Dung lượng tối đa một lần lưu sơ đồ (1–32MB) |
+
+> Lưu ý Render gói miễn phí: dữ liệu nằm trong RAM (`MemoryStore`). Ảnh **tải lên** được nhúng vào sơ đồ nên tốn RAM; ưu tiên dán **liên kết ảnh** cho ảnh nặng.
+
+## Kiểm thử
+```bash
+npm test
+```

@@ -61,8 +61,11 @@ export const config = {
   limits: {
     // Gioi han size de bao ve RAM (bytes + so luong)
     jsonBodyBytes: 512 * 1024,
-    // Tệp sao lưu/khôi phục của admin (mặc định 30 MB, chỉnh bằng IMPORT_MAX_MB).
-    importBodyBytes: Math.max(1, envInt('IMPORT_MAX_MB', 30)) * 1024 * 1024,
+    // Riêng /api/v1/diagrams: cho phép ảnh/GIF tải lên (nhúng dạng data URI). Chỉnh bằng DIAGRAM_BODY_MB.
+    diagramBodyBytes: Math.min(32, Math.max(1, envInt('DIAGRAM_BODY_MB', 12))) * 1024 * 1024,
+    // Tổng dung lượng ảnh/GIF nhúng trong MỘT sơ đồ (ký tự data URI) và của MỘT ảnh.
+    mediaTotalChars: 9 * 1024 * 1024,
+    mediaItemChars: 4 * 1024 * 1024,
     diagramNameLength: 120,
     usernameMin: 3,
     usernameMax: 32,

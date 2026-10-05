@@ -1,14 +1,15 @@
 import { config } from '../server/config.js';
+import { getEmbedHosts, frameSrcSources } from '../shared/embedHosts.js';
 
 /**
  * Helmet config + CSP chặt cho app same-origin.
  * - default-src 'self': mọi script/style/font/img đều phải cùng origin.
  * - KHÔNG có script CDN — assets build local trong public/.
- * - Ngoại lệ duy nhất: Google Fonts (chỉ CSS + file phông) để editor dùng được nhiều phông chữ.
- *   Không cho phép script hay kết nối dữ liệu tới bên ngoài.
  * - Không cho phép <script> inline (các view dùng file /js/*.js).
  * - style-src-attr 'unsafe-inline': cho phép thuộc tính style="..." trong HTML
  *   (các view dùng style="..." cho layout). Thẻ <style> và script inline vẫn bị chặn.
+ * - img-src / media-src cho phép https: (ảnh, GIF, video chèn bằng liên kết) và data:/blob: (ảnh tải lên).
+ * - frame-src chỉ cho các tên miền trong src/shared/embedHosts.js (YouTube, Canva, ...).
  * - connect-src 'self' chỉ cho fetch API cùng origin.
  * - frame-ancestors 'none' chống clickjacking.
  */
@@ -16,10 +17,12 @@ import { config } from '../server/config.js';
 const cspDirectives = {
   defaultSrc: ["'self'"],
   scriptSrc: ["'self'"],
-  styleSrc: ["'self'", 'https://fonts.googleapis.com'],
+  styleSrc: ["'self'"],
   styleSrcAttr: ["'unsafe-inline'"],
-  imgSrc: ["'self'", 'data:'],
-  fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+  imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
+  mediaSrc: ["'self'", 'data:', 'blob:', 'https:'],
+  frameSrc: ["'self'", ...frameSrcSources(getEmbedHosts())],
+  fontSrc: ["'self'"],
   connectSrc: ["'self'"],
   objectSrc: ["'none'"],
   baseUri: ["'self'"],
@@ -53,7 +56,7 @@ export function securityHeaders() {
       helmetMiddleware(req, res, (err) => {
         if (err) return next(err);
         res.setHeader('X-Frame-Options', 'DENY');
-        res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+        res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), fullscreen=*');
         next();
       });
     } catch (err) {
